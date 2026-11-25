@@ -1,4 +1,21 @@
 (function () {
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (character) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character];
+    });
+  }
+  function safeAsset(value) {
+    const path=String(value == null ? '' : value);
+    if(!/^[A-Za-z0-9._/-]+$/.test(path) || path.startsWith('/') || path.split('/').includes('..')) return '';
+    return path;
+  }
+  function safeColor(value) {
+    const color=String(value == null ? '' : value);
+    return /^#[0-9a-fA-F]{3,8}$/.test(color) ? color : '';
+  }
+  window.cabinetEscapeHtml=escapeHtml;
+  window.cabinetSafeAsset=safeAsset;
+  window.cabinetSafeColor=safeColor;
   const seen = new Set();
   const fingerprints = new Set();
   function merge() {
