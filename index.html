@@ -42,19 +42,20 @@
   .brand-name{font-family:var(--serif); font-size:19px; font-weight:500; letter-spacing:.06em; color:var(--ink)}
   .brand-name b{color:var(--accent); font-weight:700}
   /* 顶部切换：JS 实时算 SVG path metaball（floema 真方案）— 居中；rest 两胶囊相接（不相交），hover 拉丝长颈；脆角；选中=文字下朱砂点 */
-  .seg{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:226px; height:36px; pointer-events:none}
-  .seg-svg{position:absolute; inset:0; width:165px; height:36px; overflow:visible}
+  .seg{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:248px; height:36px; pointer-events:none}
+  .seg-svg{position:absolute; inset:0; width:248px; height:36px; overflow:visible}
   #seg-path{fill:#ffffff}
   #seg-glow{transition:opacity .25s}   /* hover 砖红光晕，位置随鼠标（JS 设 cx/cy），裁进胶囊形状 */
   /* 命中区固定不动（修中点抖动）；只让里面文字位移，由 JS 逐帧驱动与 path 同步 */
   .lobe{
-    pointer-events:auto; position:absolute; top:0; height:36px; width:50%; z-index:2;
+    pointer-events:auto; position:absolute; top:0; height:36px; width:82px; z-index:2;
     border:none; background:none; cursor:pointer; padding:0;
+    border-radius:9px;
   }
   .lobe[data-mode="canvas"]{left:0}
-  .lobe[data-mode="discover"]{right:0}
-  .lobe[data-mode="pending"]{right:-61px; width:61px; border-radius:9px}
-  .lobe[data-mode="pending"].on{background:rgba(176,64,47,.10)}
+  .lobe[data-mode="discover"]{left:83px}
+  .lobe[data-mode="pending"]{left:166px}
+  .lobe.on{background:rgba(176,64,47,.10)}
   .seg-lbl{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     font:inherit; font-size:13px; font-weight:400; letter-spacing:.04em; color:#241f21;
@@ -651,9 +652,7 @@
     .wrap{padding:0 24px} .hero h1{font-size:38px} .hero p{white-space:normal}
     .shell-head{padding:0 12px}
     .brand-name{display:none}
-    .seg{left:auto;right:12px;transform:none;width:226px}
-    .lobe[data-mode="pending"]{display:none}
-    #pending-tab{display:flex}
+    .seg{left:auto;right:12px;transform:none;width:248px}
     .head-tools{display:none}
     .pick-pop{position:fixed;top:60px;right:12px;width:min(330px,calc(100vw - 24px))}
     #summon{width:calc(100vw - 24px);bottom:18px}
@@ -678,6 +677,7 @@
   html[data-theme="dark"] .shell-head{background:linear-gradient(rgba(23,21,19,.94),rgba(23,21,19,.82))}
   html[data-theme="dark"] #seg-path{fill:#211e1a}
   html[data-theme="dark"] .seg-lbl{color:#eee9df}
+  html[data-theme="dark"] .lobe.on{background:rgba(209,106,85,.14)}
   html[data-theme="dark"] #summon,html[data-theme="dark"] #fbar,
   html[data-theme="dark"] #conn-f,html[data-theme="dark"] #conn-hint,
   html[data-theme="dark"] .pick-pop,html[data-theme="dark"] #tray,
@@ -888,6 +888,7 @@
     {sel:'.brand', attr:'title', zh:'灵感库 — 把感觉翻译给 AI', en:'Cabinet — translate a feeling into something an AI can build'},
     {sel:'.lobe[data-mode="canvas"] .seg-lbl', html:1, zh:'读灵感<span class="seg-dot"></span>', en:'Decode<span class="seg-dot"></span>'},
     {sel:'.lobe[data-mode="discover"] .seg-lbl', html:1, zh:'找灵感<span class="seg-dot"></span>', en:'Discover<span class="seg-dot"></span>'},
+    {sel:'.lobe[data-mode="pending"] .seg-lbl', html:1, zh:'待拆<span class="seg-dot"></span>', en:'Pending<span class="seg-dot"></span>'},
     {sel:'#pick-lbl', zh:'已收', en:'Saved'},
     {sel:'#pick-btn', attr:'title', zh:'已收的手法 — 给「转译」用', en:'Saved moves — for /translate'},
     {sel:'#pick-clear', zh:'清空', en:'Clear'},
@@ -1330,6 +1331,16 @@ window.CABINET_READY.then(()=>{
     const all=visibleItems();
     hover = (!dragging && z>.3)? pick(mouse.x,mouse.y) : null;
 
+    if(focus){
+      for(const it of all){ if(it!==focus) drawCard(it, now, z, 'focusdim'); }
+      drawCard(focus, now, z, 'normal');
+    }else if(summon){
+      for(const it of all){ if(!summon.lit.has(it)) drawCard(it, now, z, 'dim'); }
+      for(const it of all){ if(summon.lit.has(it)) drawCard(it, now, z, 'lit'); }
+    }else{
+      for(const it of all) drawCard(it, now, z, 'normal');
+    }
+
     // 感觉词标签（位置=该感觉成员的色彩重心）：概览满显+奶油晕(压图上也读得清/可点)，放大看图时退场
     const wA=1-smooth(z,.55,.85);
     wordHit=[];
@@ -1347,20 +1358,10 @@ window.CABINET_READY.then(()=>{
         ctx.font=(on?'600 ':'400 ')+'18px Georgia, "Songti SC", serif';
         ctx.fillText(window.feelLabel(o.w), sx, sy-9);
         ctx.globalAlpha=1; ctx.fillStyle=on?palette.accent:palette.sub; ctx.font='10px "PingFang SC"';
-        ctx.fillText(o.n+(window.LANG==='en'?' moves':' 手法'), sx, sy+6);
+        ctx.fillText(o.n+(window.LANG==='en'?' moves':'手法'), sx, sy+6);
         ctx.restore();
         wordHit.push({w:o.w, x:sx, y:sy-4, r:54});
       });
-    }
-
-    if(focus){
-      for(const it of all){ if(it!==focus) drawCard(it, now, z, 'focusdim'); }
-      drawCard(focus, now, z, 'normal');
-    }else if(summon){
-      for(const it of all){ if(!summon.lit.has(it)) drawCard(it, now, z, 'dim'); }
-      for(const it of all){ if(summon.lit.has(it)) drawCard(it, now, z, 'lit'); }
-    }else{
-      for(const it of all) drawCard(it, now, z, 'normal');
     }
 
     if(focus && z>1.2){
@@ -2241,7 +2242,7 @@ window.CABINET_READY.then(()=>{
   const glow = document.getElementById('seg-glow');
   const lblL = document.querySelector('.lobe[data-mode="canvas"] .seg-lbl');
   const lblR = document.querySelector('.lobe[data-mode="discover"] .seg-lbl');
-  const H=36, R=9, LW=82, GAP=1, SEP=26, NY=H/2-R, OV=R, CY=H/2, W=2*LW+GAP;  // GAP=rest相接间隙；SEP=hover外拉距离
+  const H=36, R=9, LW=82, GAP=1, SEP=26, NY=H/2-R, OV=R, CY=H/2, W=3*LW+2*GAP;  // GAP=rest相接间隙；SEP=hover外拉距离
   const REST_W=7.4, HOVER_W=6.4;                                   // 颈腰半高（粗）：rest→hover 微收，丝偏粗
 
   function rr(x, w){  // 满高圆角矩形子路径
@@ -2256,14 +2257,17 @@ window.CABINET_READY.then(()=>{
   }
   let pL=0, pR=0, tgtL=0, tgtR=0, raf=null;
   function build(){
-    const leftX=-SEP*pL, rightX=LW+GAP+SEP*pR;
-    const aR=leftX+LW, bL=rightX, gap=bL-aR;
+    const leftX=-SEP*pL, midX=LW+GAP+SEP*pR, rightX=2*(LW+GAP);
+    const aR=leftX+LW, b=midX, gap=b-aR;
     const gn=Math.max(0, Math.min(1, gap/(GAP+SEP)));            // 0=相接 1=全拉开
     const wy=REST_W - (REST_W-HOVER_W)*gn;                       // 颈腰：拉长时微收，整体偏粗
-    const d=rr(leftX,LW)+rr(rightX,LW)+neck(aR,bL,wy);
+    const gap2=rightX-(midX+LW);
+    const gn2=Math.max(0, Math.min(1, gap2/(GAP+SEP)));
+    const wy2=REST_W - (REST_W-HOVER_W)*gn2;
+    const d=rr(leftX,LW)+rr(midX,LW)+neck(aR,b,wy)+rr(rightX,LW)+neck(midX+LW,rightX,wy2);
     path.setAttribute('d', d); clip.setAttribute('d', d);        // 光晕裁剪用同一形状
     lblL.style.transform=`translateX(${leftX}px)`;
-    lblR.style.transform=`translateX(${rightX-(LW+GAP)}px)`;
+    lblR.style.transform=`translateX(${midX-(LW+GAP)}px)`;
   }
   function tick(){
     pL+=(tgtL-pL)*0.15; pR+=(tgtR-pR)*0.15;                      // 放慢拉丝（0.3→0.15），更柔不粗暴

@@ -4,7 +4,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import concurrent.futures
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -67,12 +70,12 @@ class DailyUseTests(unittest.TestCase):
             finally:
                 error.close()
 
-    def test_likes_drop_contract_uses_localhost_host_and_url_payload(self) -> None:
+    def test_likes_drop_contract_uses_loopback_host_and_url_payload(self) -> None:
         port = self.start()
         status, result = self.post(port, {
             "kind": "url",
             "value": "https://x.com/user/status/123",
-        }, host="localhost")
+        }, host="127.0.0.1")
         self.assertEqual(status, 200)
         self.assertEqual(result["status"], "created")
 
@@ -121,6 +124,57 @@ class DailyUseTests(unittest.TestCase):
         self.assertEqual(restored["status"], "restored")
         self.assertEqual(drop.pending_entries()[0]["id"], entry["id"])
 
+    def test_post_rejects_localhost_and_origins_from_another_port(self) -> None:
+        port = self.start()
+        cases = [
+            ({"Host": "localhost"}, 403),
+            ({"Origin": f"http://127.0.0.1:{port}"}, 200),
+            ({"Origin": "http://127.0.0.1"}, 403),
+            ({"Origin": f"http://localhost:{port}"}, 403),
+            ({"Origin": "http://127.0.0.1:1"}, 403),
+        ]
+        for index, (headers, expected) in enumerate(cases):
+            with self.subTest(headers=headers):
+                request = Request(
+                    f"http://127.0.0.1:{port}/drop",
+                    data=json.dumps({"kind": "note", "value": f"origin {index}"}).encode(),
+                    headers={"Content-Type": "application/json", **headers},
+                )
+                try:
+                    with urlopen(request, timeout=5) as response:
+                        status = response.status
+                except HTTPError as error:
+                    try:
+                        status = error.code
+                    finally:
+                        error.close()
+                self.assertEqual(status, expected)
+
+    def test_state_updates_share_the_drop_lock(self) -> None:
+        first = drop.drop("note", "first")["entry"]
+        second = drop.drop("note", "second")["entry"]
+        barrier = threading.Barrier(2)
+        original_read = drop.read_state
+
+        def slow_read():
+            time.sleep(0.1)
+            return original_read()
+
+        def update(entry_id):
+            barrier.wait(timeout=5)
+            drop.update_state("later", entry_id)
+
+        with mock.patch.object(drop, "read_state", side_effect=slow_read):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                list(executor.map(update, [first["id"], second["id"]]))
+        self.assertEqual(set(drop.read_state()["later"]), {first["id"], second["id"]})
+
+    def test_state_update_opens_the_drop_lock_file(self) -> None:
+        entry = drop.drop("note", "lock")["entry"]
+        with mock.patch.object(drop, "lock_file", wraps=drop.lock_file) as lock_file:
+            drop.update_state("later", entry["id"])
+        lock_file.assert_called_once_with(drop.LOCAL_DIR / ".drop.lock")
+
     def test_start_stop_use_one_loopback_endpoint(self) -> None:
         script = self.root / "drop.py"
         script.write_text(Path(drop.__file__).read_text(encoding="utf-8"), encoding="utf-8")
@@ -166,6 +220,23 @@ class DailyUseTests(unittest.TestCase):
                 mock.patch.object(drop.subprocess, "run", return_value=completed):
             with self.assertRaisesRegex(drop.DropError, f"pid {os.getpid()}"):
                 drop.start("127.0.0.1", probe.getsockname()[1])
+
+    def test_start_clears_a_stale_pid_without_a_matching_token(self) -> None:
+        drop.PID_PATH.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        with mock.patch.object(drop.socket, "socket") as socket_factory:
+            socket_factory.return_value.bind.side_effect = OSError(48, "in use")
+            with mock.patch.object(drop.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(drop.DropError, "port .* in use"):
+                    drop.start("127.0.0.1", 8788)
+        self.assertFalse(drop.PID_PATH.exists())
+
+    def test_stop_never_signals_a_pid_without_a_matching_token(self) -> None:
+        drop.PID_PATH.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        with mock.patch.object(drop, "health_token", return_value=None, create=True), \
+                mock.patch.object(drop.os, "kill") as kill:
+            drop.stop()
+        kill.assert_not_called()
+        self.assertFalse(drop.PID_PATH.exists())
 
     def test_restore_rejects_entries_outside_the_local_library(self) -> None:
         with self.assertRaisesRegex(drop.DropError, "entry not found"):

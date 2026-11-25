@@ -207,7 +207,7 @@ class PageSafetyTests(unittest.TestCase):
             "samples.push({color:this.fillStyle,alpha:this.globalAlpha});"
             "return original(text,x,y);};"
             "document.querySelector('#theme-toggle').click();"
-            "for(let index=0;index<5;index++)await frame();"
+            "for(let index=0;index<8;index++)await frame();"
             "const word=getComputedStyle(document.documentElement).getPropertyValue('--word').trim();"
             "const sub=getComputedStyle(document.documentElement).getPropertyValue('--sub').trim();"
             "const probe=document.createElement('canvas').getContext('2d');probe.fillStyle=word;"
@@ -220,6 +220,55 @@ class PageSafetyTests(unittest.TestCase):
         self.assertNotEqual(result["word"], result["sub"], result)
         self.assertTrue(result["solid"], result)
 
+    def test_canvas_word_labels_are_drawn_after_cards(self) -> None:
+        result = run_page(
+            "await window.CABINET_READY;for(let index=0;index<5;index++)await frame();"
+            "const context=document.querySelector('#cv').getContext('2d');"
+            "const fillRect=context.fillRect.bind(context);const fillText=context.fillText.bind(context);"
+            "const events=[];let frameStart=0;"
+            "context.fillRect=function(x,y,width,height){"
+            "if(x===0&&y===0&&width===innerWidth&&height===innerHeight){events.push({type:'frame'});frameStart=events.length-1;}"
+            "else events.push({type:'card'});return fillRect(x,y,width,height);};"
+            "context.fillText=function(text,x,y){if(this.font.includes('18px'))events.push({type:'word',text:String(text)});"
+            "return fillText(text,x,y);};"
+            "for(let index=0;index<3;index++)await frame();"
+            "const lastFrame=events.slice(frameStart);const lastCard=lastFrame.map((event,index)=>event.type==='card'?index:-1).filter(index=>index>=0).pop();"
+            "const firstWord=lastFrame.findIndex(event=>event.type==='word');"
+            "const pre=document.createElement('pre');pre.id='test-result';"
+            "pre.textContent=JSON.stringify({lastCard,firstWord,events:lastFrame});document.body.appendChild(pre);"
+        )
+        self.assertFalse(result.get("error"), result)
+        self.assertGreaterEqual(result["lastCard"], 0, result)
+        self.assertGreater(result["firstWord"], result["lastCard"], result)
+
+    def test_three_tabs_keep_equal_geometry_across_theme_language_and_width(self) -> None:
+        result = run_page(
+            "await window.CABINET_READY;await frame();const samples=[];"
+            "for(const lang of ['zh','en']){window.setLang(lang);"
+            "for(const theme of ['light','dark']){if(document.documentElement.dataset.theme!==theme)document.querySelector('#theme-toggle').click();"
+            "for(const mode of ['canvas','discover','pending']){document.querySelector(`.lobe[data-mode='${mode}']`).click();"
+            "const lobes=[...document.querySelectorAll('.lobe')].map(element=>{const rect=element.getBoundingClientRect();"
+            "const label=element.querySelector('.seg-lbl').getBoundingClientRect();const style=getComputedStyle(element);"
+            "return {mode:element.dataset.mode,width:rect.width,center:rect.left+rect.width/2,labelCenter:label.left+label.width/2,"
+            "visible:style.display!=='none'&&rect.width>0,selected:element.classList.contains('on'),background:style.backgroundColor};});"
+            "samples.push({lang,theme,mode,lobes});}}}"
+            "const pre=document.createElement('pre');pre.id='test-result';"
+            "pre.textContent=JSON.stringify({samples});document.body.appendChild(pre);",
+            width=390,
+        )
+        self.assertFalse(result.get("error"), result)
+        for sample in result["samples"]:
+            with self.subTest(lang=sample["lang"], theme=sample["theme"], mode=sample["mode"]):
+                self.assertTrue(all(lobe["visible"] for lobe in sample["lobes"]), sample)
+                widths = [lobe["width"] for lobe in sample["lobes"]]
+                self.assertLess(max(widths) - min(widths), 1, sample)
+                for lobe in sample["lobes"]:
+                    self.assertLess(abs(lobe["center"] - lobe["labelCenter"]), 1, sample)
+                    if lobe["selected"]:
+                        self.assertNotIn(lobe["background"], ["transparent", "rgba(0, 0, 0, 0)"], sample)
+                    else:
+                        self.assertIn(lobe["background"], ["transparent", "rgba(0, 0, 0, 0)"], sample)
+
     def test_narrow_pending_entry_trashes_and_restores(self) -> None:
         remote_state = {"trashed": [], "later": []}
         result = run_page(
@@ -227,7 +276,7 @@ class PageSafetyTests(unittest.TestCase):
             "window.__summon('note-needle');await frame();"
             "const searchCount=document.querySelector('#qn').textContent;"
             "document.querySelector('#qx').click();"
-            "const tab=document.querySelector('#pending-tab');"
+            "const tab=document.querySelector('.lobe[data-mode=\"pending\"]');"
             "const visible=getComputedStyle(tab).display!=='none'&&tab.getBoundingClientRect().width>0;"
             "tab.click();await frame();await window.CABINET_RENDER_PENDING();"
             "const pending=document.body.classList.contains('mode-pending');"
@@ -240,7 +289,7 @@ class PageSafetyTests(unittest.TestCase):
             "const restored=document.querySelector('#pending-list h3').textContent;"
             "const pre=document.createElement('pre');pre.id='test-result';"
             "pre.textContent=JSON.stringify({width:innerWidth,visible,pending,searchCount,trashed,restored,"
-            "tabText:tab.textContent});document.body.appendChild(pre);",
+            "tabText:tab.textContent.trim()});document.body.appendChild(pre);",
             pending_entry(), remote_state, width=390,
         )
         self.assertFalse(result.get("error"), result)
@@ -251,7 +300,7 @@ class PageSafetyTests(unittest.TestCase):
         self.assertEqual(result["searchCount"], "1 张对味", result)
         self.assertEqual(result["trashed"], "screen pending note", result)
         self.assertEqual(result["restored"], "screen pending note", result)
-        self.assertEqual(result["tabText"], "画布", result)
+        self.assertEqual(result["tabText"], "待拆", result)
         self.assertEqual(result["remoteState"], {"trashed": [], "later": []}, result)
 
     def test_pending_trash_appears_in_the_main_recycle_bin(self) -> None:

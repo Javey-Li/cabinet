@@ -8,8 +8,10 @@ import base64
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import shutil
+import secrets
 import stat
 import struct
 import socket
@@ -52,6 +54,7 @@ STATE_DATA = LOCAL_DIR / "state.json"
 ASSETS = LOCAL_DIR / "assets"
 THUMBS = LOCAL_DIR / "thumbs"
 PID_PATH = ROOT / ".cabinet.pid"
+RUN_TOKEN = secrets.token_urlsafe(24)
 DROP_LOCK = threading.Lock()
 MAX_BODY = 16 * 1024 * 1024
 KIND_COLORS = {
@@ -480,24 +483,34 @@ def update_state(action: str, entry_id: str) -> dict:
     bucket = {"trash": "trashed", "later": "later"}.get(action)
     if bucket is None:
         raise DropError("action must be trash or later")
-    if entry_id not in {entry["id"] for entry in local_entries()}:
-        raise DropError("entry not found in local library")
-    state = read_state()
-    state["trashed"] = [item for item in state["trashed"] if item != entry_id]
-    state["later"] = [item for item in state["later"] if item != entry_id]
-    state[bucket].append(entry_id)
-    write_state(state)
-    return state
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    lock = lock_file(LOCAL_DIR / ".drop.lock")
+    try:
+        if entry_id not in {entry["id"] for entry in local_entries()}:
+            raise DropError("entry not found in local library")
+        state = read_state()
+        state["trashed"] = [item for item in state["trashed"] if item != entry_id]
+        state["later"] = [item for item in state["later"] if item != entry_id]
+        state[bucket].append(entry_id)
+        write_state(state)
+        return state
+    finally:
+        unlock_file(lock)
 
 
 def restore_entry(entry_id: str) -> dict:
-    if entry_id not in {entry["id"] for entry in local_entries()}:
-        raise DropError("entry not found in local library")
-    state = read_state()
-    state["trashed"] = [item for item in state["trashed"] if item != entry_id]
-    state["later"] = [item for item in state["later"] if item != entry_id]
-    write_state(state)
-    return state
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    lock = lock_file(LOCAL_DIR / ".drop.lock")
+    try:
+        if entry_id not in {entry["id"] for entry in local_entries()}:
+            raise DropError("entry not found in local library")
+        state = read_state()
+        state["trashed"] = [item for item in state["trashed"] if item != entry_id]
+        state["later"] = [item for item in state["later"] if item != entry_id]
+        write_state(state)
+        return state
+    finally:
+        unlock_file(lock)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -512,56 +525,83 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def request_host(self) -> str | None:
+        raw = self.headers.get("Host", "")
+        if not raw or any(character in raw for character in "/?#"):
+            return None
+        try:
+            parsed = urlsplit("//" + raw)
+            if parsed.username or parsed.password or parsed.path:
+                return None
+            parsed.port
+            return parsed.hostname
+        except ValueError:
+            return None
+
+    def origin_is_local(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        try:
+            parsed = urlsplit(origin)
+            port = parsed.port or 80
+        except ValueError:
+            return False
+        return parsed.scheme == "http" and parsed.hostname == "127.0.0.1" \
+            and port == self.server.server_address[1] and not parsed.username \
+            and not parsed.password and parsed.path in {"", "/"} \
+            and not parsed.query and not parsed.fragment
+
+    def require_local_request(self, allow_localhost_page: bool = False) -> bool:
+        host = self.request_host()
+        if host != "127.0.0.1":
+            if allow_localhost_page and host in {"localhost", "::1"} \
+                    and urlsplit(self.path).path in {"/", "/index.html"}:
+                self.send_localhost_message()
+            else:
+                self.send_json(403, {"error": "local host required"})
+            return False
+        if not self.origin_is_local():
+            self.send_json(403, {"error": "cross-site origin rejected"})
+            return False
+        if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self.send_json(403, {"error": "cross-site request rejected"})
+            return False
+        return True
+
+    def send_localhost_message(self) -> None:
+        body = ("<!doctype html><html lang=\"zh-CN\" translate=\"no\"><meta charset=\"utf-8\">"
+                "<title>请用 127.0.0.1 打开</title><p>请用 127.0.0.1 打开。</p></html>").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
+        if not self.require_local_request(allow_localhost_page=True):
+            return
         if self.path == "/health" or self.path == "/api/health":
-            self.send_json(200, {"status": "ok"})
+            self.send_json(200, {"status": "ok", "token": RUN_TOKEN})
         elif self.path == "/api/state":
             self.send_json(200, read_state())
         else:
             self.send_json(404, {"error": "not found"})
 
     def do_OPTIONS(self) -> None:
-        origin = self.headers.get("Origin")
-        if origin:
-            try:
-                parsed_origin = urlsplit(origin)
-            except ValueError:
-                parsed_origin = None
-            if not parsed_origin or parsed_origin.scheme != "http" or parsed_origin.hostname != "127.0.0.1":
-                self.send_json(403, {"error": "cross-site origin rejected"})
-                return
-        if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            self.send_json(403, {"error": "cross-site request rejected"})
+        if not self.require_local_request():
             return
         self.send_json(405, {"error": "method not allowed"})
 
     def do_POST(self) -> None:
+        if not self.require_local_request():
+            return
         if self.path != "/drop":
             self.send_json(404, {"error": "not found"})
             return
         token = os.environ.get("CABINET_DROP_TOKEN")
         if token and self.headers.get("Authorization") != f"Bearer {token}":
             self.send_json(401, {"error": "unauthorized"})
-            return
-        try:
-            host = urlsplit("//" + self.headers.get("Host", "")).hostname
-        except ValueError:
-            host = None
-        if host not in {"127.0.0.1", "localhost", "::1"}:
-            self.send_json(403, {"error": "local host required"})
-            return
-        origin = self.headers.get("Origin")
-        if origin:
-            try:
-                parsed_origin = urlsplit(origin)
-            except ValueError:
-                parsed_origin = None
-            if not parsed_origin or parsed_origin.scheme != "http" or \
-                    parsed_origin.hostname not in {"127.0.0.1", "localhost", "::1"}:
-                self.send_json(403, {"error": "cross-site origin rejected"})
-                return
-        if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            self.send_json(403, {"error": "cross-site request rejected"})
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             self.send_json(415, {"error": "Content-Type must be application/json"})
@@ -615,6 +655,63 @@ def require_loopback(host: str) -> None:
         raise DropError("Cabinet only listens on 127.0.0.1")
 
 
+def static_file_allowed(candidate: Path, relative: Path) -> bool:
+    if any(part.startswith(".") for part in relative.parts):
+        return False
+    try:
+        if candidate.relative_to(ROOT) != relative:
+            return False
+    except ValueError:
+        return False
+    name = relative.name
+    if relative.as_posix() in {"index.html", "library-loader.js"}:
+        return True
+    if relative.parent == Path(".") and name.startswith("data-") and name.endswith(".js"):
+        return True
+    media_suffixes = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".avif", ".mp4", ".webm"}
+    if relative.parts and relative.parts[0] in {"assets", "thumbs", "folio", "shots"} \
+            and len(relative.parts) > 1 and candidate.suffix.lower() in media_suffixes:
+        return True
+    if relative.as_posix() == "local/library.js":
+        return True
+    try:
+        local_relative = candidate.relative_to(LOCAL_DIR.resolve())
+    except ValueError:
+        return False
+    if local_relative.as_posix() == "library.js":
+        return True
+    return bool(local_relative.parts) and local_relative.parts[0] in {"assets", "thumbs"} \
+        and len(local_relative.parts) > 1 and candidate.suffix.lower() in media_suffixes
+
+
+def read_pid_record() -> dict | None:
+    try:
+        payload = json.loads(PID_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("pid"), int) \
+            or not isinstance(payload.get("token"), str) or not isinstance(payload.get("port"), int):
+        return None
+    return payload
+
+
+def write_pid_record(port: int) -> None:
+    PID_PATH.write_text(json.dumps({"pid": os.getpid(), "token": RUN_TOKEN, "port": port}) + "\n",
+                        encoding="utf-8")
+
+
+def health_token(record: dict) -> str | None:
+    opener = build_opener(ProxyHandler({}))
+    request = Request(f"http://127.0.0.1:{record['port']}/api/health",
+                      headers={"Host": "127.0.0.1"})
+    try:
+        with opener.open(request, timeout=0.4) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    return payload.get("token") if isinstance(payload, dict) else None
+
+
 def serve(host: str, port: int) -> None:
     require_loopback(host)
     class LocalServer(ThreadingHTTPServer):
@@ -624,25 +721,22 @@ def serve(host: str, port: int) -> None:
         def do_GET(self) -> None:
             if self.path.startswith("/api/") or self.path == "/health":
                 return super().do_GET()
-            relative = urlsplit(self.path).path.lstrip("/") or "index.html"
+            if not self.require_local_request(allow_localhost_page=True):
+                return
+            relative = Path(urlsplit(self.path).path.lstrip("/") or "index.html")
             candidate = (ROOT / relative).resolve()
             try:
                 candidate.relative_to(ROOT)
             except ValueError:
                 self.send_json(403, {"error": "outside repository"})
                 return
-            if not candidate.is_file():
+            if not candidate.is_file() or not static_file_allowed(candidate, relative):
                 self.send_json(404, {"error": "not found"})
                 return
             content = candidate.read_bytes()
-            if candidate.suffix == ".html":
-                content_type = "text/html; charset=utf-8"
-            elif candidate.suffix == ".js":
-                content_type = "application/javascript; charset=utf-8"
-            elif candidate.suffix == ".svg":
-                content_type = "image/svg+xml"
-            else:
-                content_type = "application/octet-stream"
+            content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+            if candidate.suffix in {".html", ".js"}:
+                content_type += "; charset=utf-8"
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
@@ -650,7 +744,7 @@ def serve(host: str, port: int) -> None:
             self.wfile.write(content)
 
     server = LocalServer((host, port), StaticHandler)
-    PID_PATH.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    write_pid_record(port)
     print(f"Cabinet listening on http://{host}:{port}/", flush=True)
     try:
         server.serve_forever()
@@ -658,22 +752,18 @@ def serve(host: str, port: int) -> None:
         pass
     finally:
         server.server_close()
-        if PID_PATH.exists() and PID_PATH.read_text(encoding="utf-8").strip() == str(os.getpid()):
+        record = read_pid_record()
+        if record and record["pid"] == os.getpid() and record["token"] == RUN_TOKEN:
             PID_PATH.unlink()
 
 
 def start(host: str, port: int) -> None:
     require_loopback(host)
-    if PID_PATH.exists():
-        old_pid = PID_PATH.read_text(encoding="utf-8").strip()
-        if old_pid.isdigit():
-            try:
-                os.kill(int(old_pid), 0)
-                print(f"Cabinet is already running on http://{host}:{port}/ (pid {old_pid})")
-                return
-            except ProcessLookupError:
-                pass
-        PID_PATH.unlink()
+    record = read_pid_record()
+    if record and health_token(record) == record["token"]:
+        print(f"Cabinet is already running on http://{host}:{record['port']}/ (pid {record['pid']})")
+        return
+    PID_PATH.unlink(missing_ok=True)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind((host, port))
@@ -694,33 +784,31 @@ def start(host: str, port: int) -> None:
                                 "--host", host, "--port", str(port)],
                                cwd=str(ROOT), stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, start_new_session=True)
-    health_opener = build_opener(ProxyHandler({}))
     for _ in range(50):
-        try:
-            request = Request(f"http://127.0.0.1:{port}/api/health",
-                              headers={"Host": "127.0.0.1"})
-            with health_opener.open(request, timeout=0.4) as response:
-                if response.status == 200:
-                    print(f"Cabinet started on http://{host}:{port}/ (pid {process.pid})")
-                    return
-        except Exception:
-            time.sleep(0.1)
+        record = read_pid_record()
+        if record and record["pid"] == process.pid and health_token(record) == record["token"]:
+            print(f"Cabinet started on http://{host}:{port}/ (pid {process.pid})")
+            return
+        if process.poll() is not None:
+            break
+        time.sleep(0.1)
     process.terminate()
     raise DropError("Cabinet started but health check did not pass")
 
 
 def stop() -> None:
-    if not PID_PATH.exists():
+    record = read_pid_record()
+    if not record:
+        PID_PATH.unlink(missing_ok=True)
         print("Cabinet is not running")
         return
-    pid = PID_PATH.read_text(encoding="utf-8").strip()
-    if not pid.isdigit():
-        PID_PATH.unlink()
+    if health_token(record) != record["token"]:
+        PID_PATH.unlink(missing_ok=True)
         print("Cabinet is not running")
         return
     try:
-        os.kill(int(pid), signal.SIGTERM)
-        print(f"Cabinet stopped (pid {pid})")
+        os.kill(record["pid"], signal.SIGTERM)
+        print(f"Cabinet stopped (pid {record['pid']})")
     except ProcessLookupError:
         print("Cabinet is not running")
     finally:
