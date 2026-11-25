@@ -432,6 +432,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"error": "not found"})
 
+    def do_OPTIONS(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                parsed_origin = urlsplit(origin)
+            except ValueError:
+                parsed_origin = None
+            if not parsed_origin or parsed_origin.scheme != "http" or parsed_origin.hostname != "127.0.0.1":
+                self.send_json(403, {"error": "cross-site origin rejected"})
+                return
+        if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self.send_json(403, {"error": "cross-site request rejected"})
+            return
+        self.send_json(405, {"error": "method not allowed"})
+
     def do_POST(self) -> None:
         if self.path != "/drop":
             self.send_json(404, {"error": "not found"})

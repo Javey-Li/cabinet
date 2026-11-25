@@ -253,6 +253,22 @@ class DropTests(unittest.TestCase):
             self.assertEqual(status, expected)
         self.assertEqual(len(self.library()), 1)
 
+        preflight = Request(f"http://127.0.0.1:{port}/drop", method="OPTIONS", headers={
+            "Host": f"127.0.0.1:{port}",
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+        })
+        try:
+            with urlopen(preflight, timeout=5) as response:
+                status = response.status
+        except HTTPError as error:
+            try:
+                status = error.code
+            finally:
+                error.close()
+        self.assertEqual(status, 403)
+        self.assertEqual(len(self.library()), 1)
+
     def test_cli_note_and_image_path(self) -> None:
         script = self.root / "drop.py"
         script.write_text(Path(drop.__file__).read_text(encoding="utf-8"), encoding="utf-8")
