@@ -1,9 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" translate="no">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="google" content="notranslate">
 <title>灵感库 4.0 · 画布 ⇄ 找灵感</title>
+<script>try{const theme=localStorage.getItem('cabinet.theme');if(theme==='dark'||theme==='light')document.documentElement.dataset.theme=theme;}catch(e){}</script>
 <style>
   /* ── 灵感库 4.0 外壳：一页两模式（画布·拆解 ⇄ 找灵感·上游）──
        画布 = demo-d 引力场（Canvas2D，沿用）；找灵感 = demo-e 瀑布流（沿用）
@@ -629,6 +631,27 @@
     .art,.art--side,.art--feat,.art--l,.art--r{width:auto !important; transform:none !important; margin:0 !important}
     .ledge{display:none}
   }
+  html[data-theme="dark"]{
+    --bg:#171513; --ink:#eee9df; --sub:#a39e93; --line:#36312b; --accent:#d16a55;
+    --panel:#211e1a; --pline:#454037; --chip:#2d2923; --board:#24211d;
+    --paper:#1b1815; --paper2:#26221d; --ink-soft:#b8b0a4; --ink-faint:#7f776c; --card:#211e1a;
+    color-scheme:dark;
+  }
+  html[data-theme="dark"] .shell-head{background:linear-gradient(rgba(23,21,19,.94),rgba(23,21,19,.82))}
+  html[data-theme="dark"] #seg-path{fill:#211e1a}
+  html[data-theme="dark"] .seg-lbl{color:#eee9df}
+  html[data-theme="dark"] #summon,html[data-theme="dark"] #fbar,
+  html[data-theme="dark"] #conn-f,html[data-theme="dark"] #conn-hint,
+  html[data-theme="dark"] .pick-pop,html[data-theme="dark"] #tray,
+  html[data-theme="dark"] .plate{background:var(--card)}
+  html[data-theme="dark"] #hint:hover .hq,html[data-theme="dark"] #hint .ht,
+  html[data-theme="dark"] #trash-btn:hover,html[data-theme="dark"] .tc-restore{background:var(--card)}
+  html[data-theme="dark"] #conn-hint::after{background:var(--card)}
+  html[data-theme="dark"] #conn-f::after{box-shadow:0 0 0 2px var(--card)}
+  html[data-theme="dark"] #drop{background:rgba(23,21,19,.92)}
+  html[data-theme="dark"] .frame{background:var(--card)}
+  html[data-theme="dark"] .info .desc{color:var(--ink-soft)}
+  html[data-theme="dark"] .brand-mark path{stroke:var(--ink)}
 </style>
 </head>
 <body class="mode-canvas">
@@ -665,6 +688,7 @@
 
   <!-- 右上工具区：已收（产出 → 给「转译」，下拉气泡）+ 回收站（软删可找回，右侧图廊面板）-->
   <div class="head-tools">
+    <button class="head-btn" id="theme-toggle" type="button" title="切换明暗主题">暗</button>
     <span class="ht-wrap">
       <button class="head-btn" id="pick-btn" title="已收的手法 — 给「转译」用"><span id="pick-lbl">已收</span> <b id="pick-n">0</b><svg class="chev" width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 L6 8 L9.5 4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <div class="pick-pop" id="pick-pop">
@@ -758,6 +782,7 @@
 </section>
 
 <script src="data-v3.js"></script>
+<script src="library-loader.js"></script>
 
 <!-- ── 演示模式判定（Vercel 部署 / 本地 ?demo=1 测试）── -->
 <script>
@@ -861,8 +886,18 @@
 
 <!-- ── 画布引擎（demo-d 引力场，沿用；加 pause/resume 供模式切换）── -->
 <script>
+window.CABINET_READY.then(()=>{
 (()=>{
-  const DATA = window.LIBRARY;
+  const DATA = window.CABINET_DATA;
+  const palette = {};
+  function readPalette(){
+    const style = getComputedStyle(document.documentElement);
+    for(const name of ['bg','card','line','accent','ink','sub','ink-faint','ink-soft']){
+      palette[name] = style.getPropertyValue('--'+name).trim();
+    }
+  }
+  readPalette();
+  window.addEventListener('cabinet:theme', readPalette);
   // 回收站里的图彻底退出布局（不进 items/归一化/感觉词重心）——重载后画面按你留下的那批重铺
   const _saved0=(()=>{ try{return JSON.parse(localStorage.getItem('lingganku.v3'))||{}}catch(e){return {}} })();
   const _trashed0=new Set(_saved0.trashed||[]);
@@ -967,7 +1002,7 @@
   items.forEach(it=>{ it.x=it.tx=it.hx; it.y=it.ty=it.hy; });   // 初始：直接落位
 
   const imgs={};
-  DATA.forEach(e=>{ const im=new Image(); im.src=''+e.thumb; imgs[e.id]=im; });
+  DATA.forEach(e=>{ const im=new Image(); const src=window.cabinetSafeAsset(e.thumb); if(src) im.src=src; imgs[e.id]=im; });
 
   const glows={};
   function glow(color){
@@ -1193,7 +1228,7 @@
     ctx.save();
     ctx.shadowColor='rgba(26,26,26,'+(mode==='lit'?.24:.15)+')';
     ctx.shadowBlur=Math.min(24,(mode==='lit'?15:10)*z); ctx.shadowOffsetY=mode==='lit'?6:3;
-    ctx.fillStyle='#ffffff';
+    ctx.fillStyle=palette.card;
     ctx.beginPath();
     ctx.roundRect(sx-w2/2-fr, sy-h2/2-fr, w2+fr*2, h2+fr*2, Math.min(10,4*z+2));
     ctx.fill();
@@ -1207,27 +1242,27 @@
       ctx.drawImage(im, sx-w2/2, sy-h2/2, w2, h2);
       ctx.restore();
     }else{
-      ctx.fillStyle='#e3dfd6'; ctx.fillRect(sx-w2/2, sy-h2/2, w2, h2);
+      ctx.fillStyle=palette.line; ctx.fillRect(sx-w2/2, sy-h2/2, w2, h2);
     }
     if(mode==='lit'){
       ctx.globalAlpha=1;
-      ctx.strokeStyle='#b0402f'; ctx.lineWidth=Math.max(1.5,2.2*z);
+      ctx.strokeStyle=palette.accent; ctx.lineWidth=Math.max(1.5,2.2*z);
       ctx.beginPath();
       ctx.roundRect(sx-w2/2-fr, sy-h2/2-fr, w2+fr*2, h2+fr*2, Math.min(10,4*z+2));
       ctx.stroke();
     }
     if(isHov && base>.5 && sw>70){
       ctx.globalAlpha=1; ctx.textAlign='center';
-      ctx.font='12px "PingFang SC"'; ctx.fillStyle='#1a1a1a';
+      ctx.font='12px "PingFang SC"'; ctx.fillStyle=palette.ink;
       ctx.fillText(it.e.title, sx, sy+h2/2+20);
-      ctx.font='10px "PingFang SC"'; ctx.fillStyle='#8a8478';
+      ctx.font='10px "PingFang SC"'; ctx.fillStyle=palette.sub;
       ctx.fillText([...it.feels.keys()].map(window.feelLabel).join(' · '), sx, sy+h2/2+36);
     }
   }
 
   function draw(now){
     ctx.setTransform(DPR,0,0,DPR,0,0);
-    ctx.fillStyle='#f7f5f0'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle=palette.bg; ctx.fillRect(0,0,W,H);
     const z=cam.z;
     const all=visibleItems();
     hover = (!dragging && z>.3)? pick(mouse.x,mouse.y) : null;
@@ -1242,12 +1277,12 @@
         if(sx<-200||sx>W+200||sy<-80||sy>H+80) return;
         const on = summon && summon.q===o.w;
         ctx.save();
-        ctx.shadowColor='rgba(247,245,240,.92)'; ctx.shadowBlur=8;   // 奶油晕保留，压图上仍读得清
+        ctx.shadowColor=palette.bg+'e6'; ctx.shadowBlur=8;
         ctx.globalAlpha=wA*(on?.95:.5);
-        ctx.fillStyle=on?'#b0402f':'#a59c8b';
+        ctx.fillStyle=on?palette.accent:palette.sub;
         ctx.font=(on?'600 ':'400 ')+'18px Georgia, "Songti SC", serif';
         ctx.fillText(window.feelLabel(o.w), sx, sy-9);
-        ctx.globalAlpha=wA*(on?.7:.38); ctx.fillStyle=on?'#b0402f':'#bdb6a8'; ctx.font='10px "PingFang SC"';
+        ctx.globalAlpha=wA*(on?.7:.38); ctx.fillStyle=on?palette.accent:palette['ink-faint']; ctx.font='10px "PingFang SC"';
         ctx.fillText(o.n+(window.LANG==='en'?' moves':' 手法'), sx, sy+6);
         ctx.restore();
         wordHit.push({w:o.w, x:sx, y:sy-4, r:54});
@@ -1282,25 +1317,29 @@
         if(near) activeFacet=f;
         ctx.globalAlpha=aA*(near?1:.85);
         const r=5+Math.sin(now*.003+i)*1.2;
-        ctx.strokeStyle='#b0402f'; ctx.lineWidth=1.6;
+        ctx.strokeStyle=palette.accent; ctx.lineWidth=1.6;
         ctx.beginPath(); ctx.arc(ax,ay,r,0,7); ctx.stroke();
-        ctx.fillStyle='#b0402f';
+        ctx.fillStyle=palette.accent;
         ctx.beginPath(); ctx.arc(ax,ay,1.8,0,7); ctx.fill();
-        ctx.strokeStyle=near?'#b0402f':'#bdb5a6'; ctx.lineWidth=1;
+        ctx.strokeStyle=near?palette.accent:palette.line; ctx.lineWidth=1;
         ctx.beginPath();
         ctx.moveTo(ax+r+2,ay);
         ctx.bezierCurveTo(ax+(lx-ax)*.55, ay, lx-40, ly, lx-10, ly);
         ctx.stroke();
         ctx.textAlign='left';
-        ctx.fillStyle=near?'#1a1a1a':'#3a352e';
+        ctx.fillStyle=near?palette.ink:palette['ink-soft'];
         ctx.font='600 14px "PingFang SC"';
         ctx.fillText(window.LANG==='en'?(f.en||f.zh):f.zh, lx, ly-3);
-        ctx.fillStyle='#8a8478'; ctx.font='10.5px "PingFang SC"';
+        ctx.fillStyle=palette.sub; ctx.font='10.5px "PingFang SC"';
         ctx.fillText(f.en, lx, ly+13);
       });
       const fb=$('#fbar');
       if(activeFacet){
-        fb.innerHTML=`<div class="say">${activeFacet.say}</div><div class="tune"><b>边界</b> ${activeFacet.tune}</div>`;
+        const say=document.createElement('div'); say.className='say'; say.textContent=activeFacet.say||'';
+        const tune=document.createElement('div'); tune.className='tune';
+        const label=document.createElement('b'); label.textContent='边界';
+        tune.append(label, document.createTextNode(' '+(activeFacet.tune||'')));
+        fb.replaceChildren(say,tune);
         fb.classList.add('on');
       }else fb.classList.remove('on');
     }
@@ -1317,6 +1356,7 @@
   // 默认模式=画布 → 直接启动；切走时由 __canvasPause 暂停
   window.__canvasResume();
 })();
+});
 </script>
 
 <!-- ── 找灵感（demo-e 瀑布流，沿用）── -->
@@ -1445,8 +1485,9 @@
 
 <!-- ── 940 抽屉器官（移植自 index.html；段①只读查看 + 本地收存）── -->
 <script>
+window.CABINET_READY.then(()=>{
 (function(){
-  const DATA = window.LIBRARY;
+  const DATA = window.CABINET_DATA;
   const $ = s => document.querySelector(s);
 
   const saved = (()=>{ try{return JSON.parse(localStorage.getItem('lingganku.v3'))||{}}catch(e){return {}} })();
@@ -1566,14 +1607,20 @@
     $('#drawer').classList.toggle('wide', (e.ar||1) > 1.4);
     const plate = $('#plate');
     plate.classList.toggle('calibrating', calibrating);
-    plate.innerHTML = `<span class="plate-inner" style="--ar:${e.ar||1.6}"><img src="${e.asset}" alt="${e.title}"></span>`;
-    const inner = plate.querySelector('.plate-inner');
+    const ar=Number(e.ar); plate.replaceChildren();
+    const inner=document.createElement('span'); inner.className='plate-inner';
+    inner.style.setProperty('--ar', Number.isFinite(ar)&&ar>0 ? ar : 1.6);
+    const image=document.createElement('img'); const asset=window.cabinetSafeAsset(e.asset);
+    if(asset) image.src=asset; image.alt=String(e.title||'');
+    inner.appendChild(image); plate.appendChild(inner);
     e.facets.forEach((f,i)=>{
       const a = document.createElement('span');
       a.className = 'anchor' + (state.picked.has(f.id)?' picked':'') + (f.at[0]>72?' flip':'') + (calibrating?' cal':'');
       a.dataset.fid = f.id;
       a.style.left = f.at[0]+'%'; a.style.top = f.at[1]+'%';
-      a.innerHTML = `<span class="dot" style="animation-delay:${(i*0.45).toFixed(2)}s">${i+1}</span><span class="tag">${EN?(f.en||f.zh):f.zh}</span>`;
+      const dot=document.createElement('span'); dot.className='dot'; dot.style.animationDelay=(i*0.45).toFixed(2)+'s'; dot.textContent=String(i+1);
+      const tag=document.createElement('span'); tag.className='tag'; tag.textContent=String(EN?(f.en||f.zh):f.zh||'');
+      a.append(dot,tag);
       a.onmouseenter = ()=>setHot(f.id,true);
       a.onmouseleave = ()=>setHot(f.id,false);
       if(calibrating) a.onpointerdown = ev=>startAnchorDrag(ev, f, a, inner);
@@ -1581,7 +1628,7 @@
       inner.appendChild(a);
     });
     $('#plate-caption').innerHTML =
-      `<span class="no">№${e.id}</span>`+
+      `<span class="no">№${window.cabinetEscapeHtml(e.id)}</span>`+
       `<span>${e.facets.length} ${EN?'moves':'手法'}</span>`+
       `<span class="cap-gap"></span>`+
       `<span class="nav-arrows"><button id="prev" title="${EN?'Previous ←':'上一张 ←'}">←</button><button id="next" title="${EN?'Next →':'下一张 →'}">→</button></span>`+
@@ -1593,9 +1640,13 @@
     $('#plate-cal').onclick = toggleCalibrate;
     $('#plate-trash').onclick = ()=>trashEntry(DATA[state.cur].id);
     const sw = $('#swatches');
-    sw.innerHTML = (e.colors||[]).map(c=>
-      `<button class="sw" style="background:${c}" title="${EN?'click to copy ':'点击复制 '}${c}" data-hex="${c}"></button>`).join('');
-    sw.querySelectorAll('.sw').forEach(b=>{ b.onclick = ()=>copyText(b.dataset.hex, (EN?'Copied ':'已复制 ')+b.dataset.hex); });
+    sw.replaceChildren();
+    (e.colors||[]).forEach(c=>{
+      const color=window.cabinetSafeColor(c); if(!color) return;
+      const button=document.createElement('button'); button.className='sw'; button.style.backgroundColor=color;
+      button.title=(EN?'click to copy ':'点击复制 ')+color; button.dataset.hex=color;
+      button.onclick=()=>copyText(color,(EN?'Copied ':'已复制 ')+color); sw.appendChild(button);
+    });
   }
   function nav(d){ state.cur=(state.cur+d+DATA.length)%DATA.length; persist(); renderDrawer(); }
 
@@ -1605,24 +1656,25 @@
     const fm = new Map();
     e.facets.forEach(f=>f.feels.forEach(w=>fm.set(w,(fm.get(w)||0)+1)));
     const feels = [...fm.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0]);
-    let h = `<div class="panel-meta">№${e.id} · ${e.family}</div><h2>${e.title}</h2>`;
+    const esc=window.cabinetEscapeHtml;
+    let h = `<div class="panel-meta">№${esc(e.id)} · ${esc(e.family)}</div><h2>${esc(e.title)}</h2>`;
     const EN = window.LANG==='en';
     h += `<div class="feel-line"><span class="lab">${EN?'Feel':'感觉'}</span>`;
-    h += feels.map(w=>`<button class="feel" data-feel="${w}">${window.feelLabel(w)}</button>`).join('');
+    h += feels.map(w=>`<button class="feel" data-feel="${esc(w)}">${esc(window.feelLabel(w))}</button>`).join('');
     h += `<span class="feel-hint">${EN?'tap a feeling = save the set · tap a move = see its kind on the canvas':'点感觉词 = 整组收；点手法卡 = 在画布看同款'}</span></div>`;
     e.facets.forEach((f,i)=>{
       const picked = state.picked.has(f.id);
       const term = EN ? (f.en||f.zh) : f.zh;   // 英文模式 en 术语为主、zh 作副
       const sub  = EN ? f.zh : f.en;
-      h += `<div class="move${picked?' picked':''}" data-fid="${f.id}" title="${EN?'see its kind on the canvas':'在画布上看同款'}">
+      h += `<div class="move${picked?' picked':''}" data-fid="${esc(f.id)}" title="${EN?'see its kind on the canvas':'在画布上看同款'}">
         <span class="num">${i+1}</span>
-        <span class="zh">${term}</span>
+        <span class="zh">${esc(term)}</span>
         <span class="acts">
-          <button class="act pick${picked?' on':''}" data-pick="${f.id}" title="${picked?(EN?'Saved · click to remove':'已收 · 点击移出'):(EN?'Save — for /translate':'收 — 给「转译」用')}">${picked?ICO.check:ICO.plus}</button>
+          <button class="act pick${picked?' on':''}" data-pick="${esc(f.id)}" title="${picked?(EN?'Saved · click to remove':'已收 · 点击移出'):(EN?'Save — for /translate':'收 — 给「转译」用')}">${picked?ICO.check:ICO.plus}</button>
           <a class="act" href="https://www.google.com/search?tbm=isch&q=${encodeURIComponent(f.q)}" target="_blank" rel="noopener" title="${EN?'search similar visuals':'搜同类视觉'}" onclick="event.stopPropagation()">${ICO.search}</a>
         </span>
-        <span class="en">${sub}</span>
-        <span class="mech">${f.mech}</span>
+        <span class="en">${esc(sub)}</span>
+        <span class="mech">${esc(f.mech)}</span>
       </div>`;
     });
     panel.innerHTML = h; panel.scrollTop = 0;
@@ -1696,8 +1748,13 @@
     [...state.trashed].forEach(eid=>{
       const e=DATA.find(x=>x.id===eid); if(!e) return;
       const c=document.createElement('div'); c.className='trash-card';
-      c.innerHTML=`<div class="tc-imgwrap"><img class="tc-img" src="${e.thumb}" alt=""><button class="tc-restore">恢复</button></div><div class="tc-cap"><b>№${e.id}</b> ${e.title}</div>`;
-      c.querySelector('.tc-restore').onclick=()=>restoreEntry(eid);
+      const wrap=document.createElement('div'); wrap.className='tc-imgwrap';
+      const image=document.createElement('img'); image.className='tc-img'; image.alt='';
+      const thumb=window.cabinetSafeAsset(e.thumb); if(thumb) image.src=thumb;
+      const restore=document.createElement('button'); restore.className='tc-restore'; restore.textContent='恢复'; restore.onclick=()=>restoreEntry(eid);
+      const caption=document.createElement('div'); caption.className='tc-cap';
+      const number=document.createElement('b'); number.textContent='№'+String(e.id||'');
+      caption.append(number,document.createTextNode(' '+String(e.title||''))); wrap.append(image,restore); c.append(wrap,caption);
       grid.appendChild(c);
     });
     body.appendChild(grid);
@@ -1712,8 +1769,15 @@
     [...state.picked].forEach(fid=>{
       const x=findFacet(fid); if(!x) return;
       const row=document.createElement('div'); row.className='pick-row';
-      row.innerHTML=`<img src="${x.entry.thumb}" alt=""><div class="pr-txt"><div class="pr-zh">${x.facet.zh}</div><div class="pr-en">${x.facet.en}</div><div class="pr-src">来自 <b>№${x.entry.id}</b> ${x.entry.title}</div></div><button class="pr-x" title="移出">✕</button>`;
-      row.querySelector('.pr-x').onclick=()=>togglePick(fid);
+      const image=document.createElement('img'); image.alt=''; const thumb=window.cabinetSafeAsset(x.entry.thumb); if(thumb) image.src=thumb;
+      const text=document.createElement('div'); text.className='pr-txt';
+      const zh=document.createElement('div'); zh.className='pr-zh'; zh.textContent=String(x.facet.zh||'');
+      const en=document.createElement('div'); en.className='pr-en'; en.textContent=String(x.facet.en||'');
+      const source=document.createElement('div'); source.className='pr-src';
+      const number=document.createElement('b'); number.textContent='№'+String(x.entry.id||'');
+      source.append('来自 ',number,document.createTextNode(' '+String(x.entry.title||'')));
+      const remove=document.createElement('button'); remove.className='pr-x'; remove.title='移出'; remove.textContent='✕'; remove.onclick=()=>togglePick(fid);
+      text.append(zh,en,source); row.append(image,text,remove);
       row.onmouseenter=()=>setHot(fid,true); row.onmouseleave=()=>setHot(fid,false);
       box.appendChild(row);
     });
@@ -1989,6 +2053,7 @@
   /* 对账：入库发生在对话里（Claude 动文件系统），页面感知不到。
      切回窗口重列 _inbox；data-v3.js 变了（有新图入库）直接重载上画布。 */
   let dataSig = null;
+  let localSig;
   async function checkDataFresh(){
     if(!dirHandle) return;
     try{
@@ -1999,17 +2064,28 @@
       if(sig!==dataSig) location.reload();
     }catch(e){}
   }
+  async function checkLocalFresh(){
+    if(location.protocol==='file:') return;
+    try{
+      const response = await fetch(window.CABINET_LOCAL_PATH || 'local/library.js',{cache:'no-store'});
+      if(!response.ok){ if(localSig!==undefined && localSig!==null) location.reload(); else localSig=null; return; }
+      const text = await response.text();
+      if(localSig===undefined){ localSig=text; return; }
+      if(localSig===null || text!==localSig) location.reload();
+      else localSig=text;
+    }catch(e){}
+  }
   // 轮询：页面不再只靠失焦/聚焦才对账——连接后画布模式自轮询（入库中 12s / 空闲 60s），
   // 不切窗口也能自动刷新、完成即自动上图；不会「看着不动以为卡了」。
   let pollT=null;
   function scheduleReconcilePoll(){
     clearTimeout(pollT);
-    if(!dirHandle || document.body.classList.contains('mode-discover')) return;
-    pollT = setTimeout(reconcile, ingesting ? 4000 : 60000);
+    if(document.body.classList.contains('mode-discover')) return;
+    pollT = setTimeout(reconcile, ingesting ? 4000 : (localSig===null ? 60000 : 15000));
   }
   async function reconcile(){
     if(document.body.classList.contains('mode-discover')){ return; }   // 找灵感模式不轮询
-    await renderTray(); await checkDataFresh();
+    await checkLocalFresh(); await renderTray(); await checkDataFresh();
     scheduleReconcilePoll();
   }
   window.addEventListener('focus', reconcile);
@@ -2029,6 +2105,7 @@
   window.openDrawer = openDrawer;
   window.updateConnHint = updateConnHint;   // 模式切换在另一个 IIFE，靠 window 够到
 })();
+});
 </script>
 
 <!-- ── 模式切换 ── -->
@@ -2146,6 +2223,22 @@
   let cx=0,cy=0,queued=false;
   const apply=()=>{ queued=false; const r=md.getBoundingClientRect(); md.style.setProperty('--mx',(cx-r.left)+'px'); md.style.setProperty('--my',(cy-r.top)+'px'); };
   addEventListener('pointermove',e=>{ cx=e.clientX; cy=e.clientY; if(!queued){ queued=true; requestAnimationFrame(apply); } },{passive:true});
+})();
+</script>
+
+<script>
+(function(){
+  const root=document.documentElement;
+  const button=document.getElementById('theme-toggle');
+  function apply(theme){
+    root.dataset.theme=theme;
+    try{localStorage.setItem('cabinet.theme',theme);}catch(e){}
+    button.textContent=theme==='dark'?'明':'暗';
+    button.title=theme==='dark'?'切换到明色主题':'切换到暗色主题';
+    window.dispatchEvent(new CustomEvent('cabinet:theme'));
+  }
+  apply(root.dataset.theme==='dark'?'dark':'light');
+  button.onclick=()=>apply(root.dataset.theme==='dark'?'light':'dark');
 })();
 </script>
 

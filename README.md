@@ -107,6 +107,29 @@ cd cabinet
 
 ---
 
+## 快速丢入
+
+`drop.py` 是一个最小的本机入口。它吃一个 URL、一段文字或一张图，写成 git 忽略的 `local/` 里的 Cabinet 条目，保留来源、收件时间和内容指纹；重复内容返回 `duplicate`，不再新增。公开库 `data-v3.js` 只读，不会被这个入口修改。
+
+```bash
+python3 drop.py url 'https://example.com/reference'
+python3 drop.py note '这句话先放进灵感池'
+python3 drop.py image './reference.png'
+
+# 本机 HTTP；默认只监听 127.0.0.1
+python3 drop.py serve --port 8788
+```
+
+默认本机目录是 `local/`。可以用 `CABINET_LOCAL_DIR=local/private` 改到 `local/` 内的另一个目录；页面会自动加载对应的 `library.js`。目录不能放到仓库外。
+
+HTTP 收 JSON：`{"kind":"url","value":"https://example.com"}`、`{"kind":"note","value":"一句话"}`，或 `{"kind":"image","name":"reference.png","data":"<base64>"}`。设了 `CABINET_DROP_TOKEN` 时，请求头要带 `Authorization: Bearer ...`。
+
+HTTP 只接受 `Host: 127.0.0.1`。带跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` 的浏览器请求返回 403。
+
+这个入口只负责“收进来”，不调用模型、不抓网页、不自动拆手法。URL 和文字会生成可看的占位卡；图片保留原图。后续仍由 agent 按 [`INGEST.md`](./INGEST.md) 处理。Pillow 可选：装了会提取图片主色，没装也能丢图并读取真实宽高。页面没有 `local/library.js` 时照常显示公开库。
+
+---
+
 ## 模型：感觉 ← 手法 ← 参考
 
 - **参考（plate）**——你收集的一张截图或图像。
@@ -138,6 +161,9 @@ assets/ thumbs/   种子参考图（低清）+ 缩略图
 folio/ shots/     「找灵感」目录 —— 指向各设计站的缩略图
 _inbox/           待入库的参考丢这里
 INGEST.md         agent 中立的入库规范
+library-loader.js 合并公开库和可选本机库
+drop.py           URL / 文字 / 图片的本机丢入入口
+tests/           drop.py 的单文件回归测试
 start.sh          localhost 兜底（浏览器在 file:// 下拦连接时用）
 setup/            install.sh —— 安装 /translate、转译 hook、(macOS) 自动 watcher
 ```
