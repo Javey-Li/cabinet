@@ -234,7 +234,7 @@ class DropTests(unittest.TestCase):
         port = self.start_server()
         payload = json.dumps({"kind": "note", "value": "blocked"}).encode("utf-8")
         for headers, expected in [
-            ({"Host": "localhost", "Content-Type": "application/json"}, 403),
+            ({"Host": "example.com", "Content-Type": "application/json"}, 403),
             ({"Host": "127.0.0.1", "Origin": "https://evil.example",
               "Content-Type": "application/json"}, 403),
             ({"Host": "127.0.0.1", "Sec-Fetch-Site": "cross-site",

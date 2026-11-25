@@ -8,6 +8,7 @@ _desk.json
 .ingest.lock
 _ingest.log
 .drop.lock
+.cabinet.pid
 
 # private local library
 local/

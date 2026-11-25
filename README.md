@@ -94,6 +94,17 @@ cd cabinet
 
 **以后再开，直接双击 `index.html`**——现代 Chrome 下就是全功能。若浏览器在 `file://` 下拦了文件夹授权，改用 `./start.sh`（localhost）。
 
+### 每天收灵感
+
+```bash
+python3 drop.py start
+python3 drop.py stop
+```
+
+启动后打开 `http://127.0.0.1:8788/`。页面和投放口共用这一个端口，只监听 `127.0.0.1`。已经在运行会直接提示；端口被占会报告占用进程的 PID。
+
+顶部切到「待拆」能看到新收的链接、文字和图片，按收件时间排好，并显示条数和最早一条等了多少天。「先放着」会移到「先放着的」，「不要了」会移入「回收站」；两处都能恢复，原文件不会删。窄屏用右下角的「待拆 / 画布」按钮切换。
+
 ---
 
 ## 日常就两个动作
@@ -115,16 +126,14 @@ cd cabinet
 python3 drop.py url 'https://example.com/reference'
 python3 drop.py note '这句话先放进灵感池'
 python3 drop.py image './reference.png'
-
-# 本机 HTTP；默认只监听 127.0.0.1
-python3 drop.py serve --port 8788
+python3 drop.py url 'https://example.com/reference' --note '补一句备注'
 ```
 
 默认本机目录是 `local/`。可以用 `CABINET_LOCAL_DIR=local/private` 改到 `local/` 内的另一个目录；页面会自动加载对应的 `library.js`。目录不能放到仓库外。
 
-HTTP 收 JSON：`{"kind":"url","value":"https://example.com"}`、`{"kind":"note","value":"一句话"}`，或 `{"kind":"image","name":"reference.png","data":"<base64>"}`。设了 `CABINET_DROP_TOKEN` 时，请求头要带 `Authorization: Bearer ...`。
+HTTP 收 JSON：`{"kind":"url","value":"https://example.com"}`、`{"kind":"note","value":"一句话"}`，或 `{"kind":"image","name":"reference.png","data":"<base64>"}`。URL 可再加 `"note":"补一句备注"`；同一链接不会新增条目，备注会追加，不覆盖原来的。设了 `CABINET_DROP_TOKEN` 时，请求头要带 `Authorization: Bearer ...`。
 
-HTTP 只接受 `Host: 127.0.0.1`。带跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` 的浏览器请求返回 403。
+HTTP 接受 `Host: 127.0.0.1`、`localhost` 或 `::1`。带跨站 `Origin` 或 `Sec-Fetch-Site: cross-site` 的浏览器请求返回 403。X 喜欢导入可 POST `{"kind":"url","value":"帖子链接"}` 到 `/drop`；新条目返回 200，重复返回 409。
 
 这个入口只负责“收进来”，不调用模型、不抓网页、不自动拆手法。URL 和文字会生成可看的占位卡；图片保留原图。后续仍由 agent 按 [`INGEST.md`](./INGEST.md) 处理。Pillow 可选：装了会提取图片主色，没装也能丢图并读取真实宽高。页面没有 `local/library.js` 时照常显示公开库。
 
@@ -162,7 +171,7 @@ folio/ shots/     「找灵感」目录 —— 指向各设计站的缩略图
 _inbox/           待入库的参考丢这里
 INGEST.md         agent 中立的入库规范
 library-loader.js 合并公开库和可选本机库
-drop.py           URL / 文字 / 图片的本机丢入入口
+drop.py           URL / 文字 / 图片的本机丢入入口 + start / stop
 tests/           drop.py 的单文件回归测试
 start.sh          localhost 兜底（浏览器在 file:// 下拦连接时用）
 setup/            install.sh —— 安装 /translate、转译 hook、(macOS) 自动 watcher

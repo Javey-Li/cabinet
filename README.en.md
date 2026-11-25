@@ -160,10 +160,18 @@ read-only to this endpoint.
 python3 drop.py url 'https://example.com/reference'
 python3 drop.py note 'Keep this thought in the inbox'
 python3 drop.py image './reference.png'
-
-# Local HTTP; listens on 127.0.0.1 by default
-python3 drop.py serve --port 8788
+python3 drop.py url 'https://example.com/reference' --note 'One more note'
 ```
+
+Run `python3 drop.py start` to serve the page and drop endpoint together at
+`http://127.0.0.1:8788/`. It only listens on `127.0.0.1`. Run
+`python3 drop.py stop` to stop it. A second start reports the running process;
+an occupied port reports its PID.
+
+The Pending view lists new links, notes and images by capture time, with the
+count and the age of the oldest item. Later moves an item aside; Trash keeps it
+in the recycle bin. Both can be restored without deleting files. On narrow
+screens, use the Pending / Canvas button at the bottom right.
 
 The default local directory is `local/`. Set `CABINET_LOCAL_DIR=local/private`
 to use another directory inside `local/`; the page loads its `library.js`
@@ -173,9 +181,13 @@ The HTTP endpoint accepts JSON: `{"kind":"url","value":"https://example.com"}`,
 `{"kind":"note","value":"One note"}`, or
 `{"kind":"image","name":"reference.png","data":"<base64>"}`. When
 `CABINET_DROP_TOKEN` is set, send `Authorization: Bearer ...`.
+URLs also accept `"note":"One more note"`; a repeated URL keeps one entry and
+appends notes instead of replacing them.
 
-HTTP accepts only `Host: 127.0.0.1`. Browser requests with a cross-site `Origin`
-or `Sec-Fetch-Site: cross-site` receive 403.
+HTTP accepts `Host: 127.0.0.1`, `localhost` or `::1`. Browser requests with a
+cross-site `Origin` or `Sec-Fetch-Site: cross-site` receive 403. X likes imports
+can POST `{"kind":"url","value":"post URL"}` to `/drop`; a new entry returns
+200 and a duplicate returns 409.
 
 This endpoint only captures input. It does not call a model, fetch pages or
 extract moves. URLs and notes get a visible placeholder card; images keep the
@@ -225,7 +237,7 @@ folio/ shots/     "find inspiration" directory — thumbnails linking to design 
 _inbox/           drop zone for references to ingest
 INGEST.md         the agent-neutral ingest spec
 library-loader.js merges the public library with the optional local library
-drop.py           local URL / note / image drop endpoint
+drop.py           local URL / note / image drop endpoint + start / stop
 tests/           single-file regression tests for drop.py
 start.sh          localhost fallback (if your browser blocks connect on file://)
 setup/            install.sh — installs /translate, the 转译 hook, and (macOS) the watcher
