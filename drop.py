@@ -36,9 +36,14 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data-v3.js"
-ASSETS = ROOT / "assets"
-THUMBS = ROOT / "thumbs"
+PUBLIC_DATA = ROOT / "data-v3.js"
+LOCAL_DIR = Path(os.environ.get("CABINET_LOCAL_DIR") or ROOT / "local").expanduser()
+if not LOCAL_DIR.is_absolute():
+    LOCAL_DIR = ROOT / LOCAL_DIR
+LOCAL_DIR = LOCAL_DIR.resolve()
+LOCAL_DATA = LOCAL_DIR / "library.js"
+ASSETS = LOCAL_DIR / "assets"
+THUMBS = LOCAL_DIR / "thumbs"
 DROP_LOCK = threading.Lock()
 MAX_BODY = 16 * 1024 * 1024
 KIND_COLORS = {
@@ -52,29 +57,60 @@ class DropError(Exception):
     pass
 
 
-def read_library() -> list[dict]:
-    text = DATA.read_text(encoding="utf-8")
-    marker = text.find("window.LIBRARY")
-    if marker < 0:
-        raise DropError("data-v3.js has no window.LIBRARY marker")
-    start = text.find("[", marker)
+def read_library(path: Path, marker: str) -> list[dict]:
+    text = path.read_text(encoding="utf-8")
+    position = text.find(marker)
+    if position < 0:
+        raise DropError(f"{path.name} has no {marker} marker")
+    start = text.find("[", position)
     end = text.rfind("]")
     if start < 0 or end < start:
-        raise DropError("data-v3.js has no library array")
+        raise DropError(f"{path.name} has no library array")
     return json.loads(text[start:end + 1])
 
 
-def write_library(entries: list[dict]) -> None:
-    text = DATA.read_text(encoding="utf-8")
-    marker = text.find("window.LIBRARY")
-    if marker < 0:
-        raise DropError("data-v3.js has no window.LIBRARY marker")
-    start = text.find("[", marker)
-    end = text.rfind("]")
-    if start < 0 or end < start:
-        raise DropError("data-v3.js has no library array")
+def public_entries() -> list[dict]:
+    return read_library(PUBLIC_DATA, "window.LIBRARY")
+
+
+def local_entries() -> list[dict]:
+    if not LOCAL_DATA.exists():
+        return []
+    return read_library(LOCAL_DATA, "window.LOCAL_LIBRARY")
+
+
+def all_entries() -> list[dict]:
+    return public_entries() + local_entries()
+
+
+def write_local_library(entries: list[dict]) -> None:
     body = json.dumps(entries, ensure_ascii=False, indent=2)
-    atomic_write(DATA, (text[:start] + body + text[end + 1:]).encode("utf-8"))
+    atomic_write(LOCAL_DATA, f"window.LOCAL_LIBRARY = {body};\n".encode("utf-8"))
+
+
+def asset_url(path: Path) -> str:
+    root = ROOT.resolve()
+    try:
+        path.resolve().relative_to(root)
+    except ValueError as error:
+        raise DropError("CABINET_LOCAL_DIR must stay inside the Cabinet repository") from error
+    return Path(os.path.relpath(path.resolve(), root)).as_posix()
+
+
+def ensure_local_loader() -> None:
+    default_dir = (ROOT / "local").resolve()
+    local_dir = LOCAL_DIR.resolve()
+    if local_dir == default_dir:
+        return
+    try:
+        local_dir.relative_to(default_dir)
+    except ValueError as error:
+        raise DropError("CABINET_LOCAL_DIR must stay inside the local/ directory") from error
+    script = asset_url(LOCAL_DATA)
+    default_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write(default_dir / "library.js",
+                 (f"window.CABINET_LOCAL_PATH = {json.dumps(script)};\n"
+                  "window.LOCAL_LIBRARY = [];\n").encode("utf-8"))
 
 
 def next_id(entries: list[dict]) -> str:
@@ -169,6 +205,8 @@ def image_dimensions(payload: bytes) -> tuple[int, int]:
 
 def measure_image(payload: bytes) -> tuple[float, list[str]]:
     width, height = image_dimensions(payload)
+    if width <= 0 or height <= 0:
+        raise DropError("image dimensions must be positive")
     colors = KIND_COLORS["image"]
     if Image is not None:
         import io
@@ -294,6 +332,7 @@ def make_facet(entry_id: str, kind: str, value: str) -> dict:
 
 
 def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None) -> dict:
+    ensure_local_loader()
     if kind == "url":
         value = normalize_url(value)
         fingerprint_source = url_key(value)
@@ -313,7 +352,8 @@ def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None)
     else:
         fingerprint = hashlib.sha256(f"{kind}\0{fingerprint_source}".encode("utf-8")).hexdigest()
     with DROP_LOCK:
-        lock_path = ROOT / ".drop.lock"
+        LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+        lock_path = LOCAL_DIR / ".drop.lock"
         lock = lock_file(lock_path)
         try:
             return drop_locked(kind, value, name, payload, fingerprint)
@@ -322,7 +362,8 @@ def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None)
 
 
 def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerprint: str) -> dict:
-    entries = read_library()
+    entries = all_entries()
+    local = local_entries()
     for entry in entries:
         if entry.get("source", {}).get("fingerprint") == fingerprint:
             return {"status": "duplicate", "id": entry["id"], "entry": entry}
@@ -337,7 +378,7 @@ def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerp
         asset_path = ASSETS / f"{entry_id}{suffix}"
         ar, colors = measure_image(payload)
         atomic_write(asset_path, payload)
-        thumb_path = f"assets/{asset_path.name}"
+        thumb_path = asset_path
     else:
         colors = KIND_COLORS[kind]
         ar = 1.5
@@ -348,7 +389,7 @@ def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerp
         atomic_write(asset_path, placeholder(entry_id, label, title, source_text, now, colors,
                                              720, 480).encode("utf-8"))
         svg_thumb(entry_id, label, title, source_text, now, colors)
-        thumb_path = f"thumbs/{entry_id}.svg"
+        thumb_path = THUMBS / f"{entry_id}.svg"
 
     source = {
         "kind": kind,
@@ -361,15 +402,15 @@ def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerp
         "id": entry_id,
         "title": title_for(kind, value),
         "family": "Image" if kind == "image" else "Graphic",
-        "asset": f"assets/{asset_path.name}",
-        "thumb": thumb_path,
+        "asset": asset_url(asset_path),
+        "thumb": asset_url(thumb_path),
         "ar": ar,
         "colors": colors,
         "source": source,
         "createdAt": now,
         "facets": [make_facet(entry_id, kind, value)],
     }
-    write_library(entries + [entry])
+    write_local_library(local + [entry])
     return {"status": "created", "id": entry_id, "entry": entry}
 
 
@@ -403,8 +444,20 @@ class Handler(BaseHTTPRequestHandler):
             host = urlsplit("//" + self.headers.get("Host", "")).hostname
         except ValueError:
             host = None
-        if host not in {"127.0.0.1", "localhost", "::1"}:
+        if host != "127.0.0.1":
             self.send_json(403, {"error": "local host required"})
+            return
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                parsed_origin = urlsplit(origin)
+            except ValueError:
+                parsed_origin = None
+            if not parsed_origin or parsed_origin.scheme != "http" or parsed_origin.hostname != "127.0.0.1":
+                self.send_json(403, {"error": "cross-site origin rejected"})
+                return
+        if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self.send_json(403, {"error": "cross-site request rejected"})
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
             self.send_json(415, {"error": "Content-Type must be application/json"})

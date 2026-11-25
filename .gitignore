@@ -9,6 +9,9 @@ _desk.json
 _ingest.log
 .drop.lock
 
+# private local library
+local/
+
 # Python
 __pycache__/
 *.py[cod]
