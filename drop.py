@@ -9,15 +9,21 @@ import hashlib
 import html
 import json
 import os
+import shutil
 import stat
 import struct
+import socket
+import signal
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 try:
     import fcntl
@@ -42,8 +48,10 @@ if not LOCAL_DIR.is_absolute():
     LOCAL_DIR = ROOT / LOCAL_DIR
 LOCAL_DIR = LOCAL_DIR.resolve()
 LOCAL_DATA = LOCAL_DIR / "library.js"
+STATE_DATA = LOCAL_DIR / "state.json"
 ASSETS = LOCAL_DIR / "assets"
 THUMBS = LOCAL_DIR / "thumbs"
+PID_PATH = ROOT / ".cabinet.pid"
 DROP_LOCK = threading.Lock()
 MAX_BODY = 16 * 1024 * 1024
 KIND_COLORS = {
@@ -86,6 +94,53 @@ def all_entries() -> list[dict]:
 def write_local_library(entries: list[dict]) -> None:
     body = json.dumps(entries, ensure_ascii=False, indent=2)
     atomic_write(LOCAL_DATA, f"window.LOCAL_LIBRARY = {body};\n".encode("utf-8"))
+
+
+def read_state() -> dict:
+    if not STATE_DATA.exists():
+        return {"trashed": [], "later": []}
+    try:
+        payload = json.loads(STATE_DATA.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"trashed": [], "later": []}
+    if not isinstance(payload, dict):
+        return {"trashed": [], "later": []}
+    return {
+        "trashed": list(payload.get("trashed") or []),
+        "later": list(payload.get("later") or []),
+    }
+
+
+def write_state(state: dict) -> None:
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write(STATE_DATA, json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
+
+
+def pending_entries() -> list[dict]:
+    state = read_state()
+    hidden = set(state["trashed"]) | set(state["later"])
+    entries = [entry for entry in local_entries() if entry["id"] not in hidden]
+    entries.sort(key=lambda entry: entry.get("createdAt") or entry.get("source", {}).get("createdAt") or "")
+    return entries
+
+
+def append_note(entry: dict, note: str) -> dict:
+    note = " ".join(str(note).split())
+    if not note:
+        return {"status": "duplicate", "id": entry["id"], "entry": entry}
+    local = local_entries()
+    target = next((item for item in local if item["id"] == entry["id"]), None)
+    if target is None:
+        return {"status": "duplicate", "id": entry["id"], "entry": entry}
+    notes = list(target.get("notes") or [])
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    if not any(item.get("body") == note for item in notes):
+        notes.append({"body": note, "createdAt": now})
+        target["notes"] = notes
+        target["updatedAt"] = now
+        write_local_library(local)
+        entry = target
+    return {"status": "noted", "id": entry["id"], "entry": entry}
 
 
 def asset_url(path: Path) -> str:
@@ -331,7 +386,8 @@ def make_facet(entry_id: str, kind: str, value: str) -> dict:
     }
 
 
-def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None) -> dict:
+def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None,
+         note: str = "") -> dict:
     ensure_local_loader()
     if kind == "url":
         value = normalize_url(value)
@@ -356,16 +412,19 @@ def drop(kind: str, value: str, *, name: str = "", payload: bytes | None = None)
         lock_path = LOCAL_DIR / ".drop.lock"
         lock = lock_file(lock_path)
         try:
-            return drop_locked(kind, value, name, payload, fingerprint)
+            return drop_locked(kind, value, name, payload, fingerprint, note)
         finally:
             unlock_file(lock)
 
 
-def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerprint: str) -> dict:
+def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerprint: str,
+                note: str = "") -> dict:
     entries = all_entries()
     local = local_entries()
     for entry in entries:
         if entry.get("source", {}).get("fingerprint") == fingerprint:
+            if kind == "url" and note:
+                return append_note(entry, note)
             return {"status": "duplicate", "id": entry["id"], "entry": entry}
 
     entry_id = next_id(entries)
@@ -410,8 +469,35 @@ def drop_locked(kind: str, value: str, name: str, payload: bytes | None, fingerp
         "createdAt": now,
         "facets": [make_facet(entry_id, kind, value)],
     }
+    if kind == "url" and note:
+        entry["notes"] = [{"body": " ".join(note.split()),
+                           "createdAt": now}]
     write_local_library(local + [entry])
     return {"status": "created", "id": entry_id, "entry": entry}
+
+
+def update_state(action: str, entry_id: str) -> dict:
+    bucket = {"trash": "trashed", "later": "later"}.get(action)
+    if bucket is None:
+        raise DropError("action must be trash or later")
+    if entry_id not in {entry["id"] for entry in local_entries()}:
+        raise DropError("entry not found in local library")
+    state = read_state()
+    state["trashed"] = [item for item in state["trashed"] if item != entry_id]
+    state["later"] = [item for item in state["later"] if item != entry_id]
+    state[bucket].append(entry_id)
+    write_state(state)
+    return state
+
+
+def restore_entry(entry_id: str) -> dict:
+    if entry_id not in {entry["id"] for entry in local_entries()}:
+        raise DropError("entry not found in local library")
+    state = read_state()
+    state["trashed"] = [item for item in state["trashed"] if item != entry_id]
+    state["later"] = [item for item in state["later"] if item != entry_id]
+    write_state(state)
+    return state
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -427,8 +513,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path == "/health":
+        if self.path == "/health" or self.path == "/api/health":
             self.send_json(200, {"status": "ok"})
+        elif self.path == "/api/state":
+            self.send_json(200, read_state())
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -459,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
             host = urlsplit("//" + self.headers.get("Host", "")).hostname
         except ValueError:
             host = None
-        if host != "127.0.0.1":
+        if host not in {"127.0.0.1", "localhost", "::1"}:
             self.send_json(403, {"error": "local host required"})
             return
         origin = self.headers.get("Origin")
@@ -468,7 +556,8 @@ class Handler(BaseHTTPRequestHandler):
                 parsed_origin = urlsplit(origin)
             except ValueError:
                 parsed_origin = None
-            if not parsed_origin or parsed_origin.scheme != "http" or parsed_origin.hostname != "127.0.0.1":
+            if not parsed_origin or parsed_origin.scheme != "http" or \
+                    parsed_origin.hostname not in {"127.0.0.1", "localhost", "::1"}:
                 self.send_json(403, {"error": "cross-site origin rejected"})
                 return
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
@@ -497,37 +586,166 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError) as error:
                     raise DropError(f"invalid base64: {error}")
                 result = drop(kind, payload.get("value") or payload.get("name", "image"),
-                              name=payload.get("name", ""), payload=image_bytes)
+                              name=payload.get("name", ""), payload=image_bytes,
+                              note=payload.get("note", ""))
             elif kind in {"url", "note"}:
-                result = drop(kind, payload.get("value", ""))
+                result = drop(kind, payload.get("value", ""), note=payload.get("note", ""))
+            elif kind == "state":
+                action = payload.get("action", "")
+                entry_id = str(payload.get("id", ""))
+                if action == "restore":
+                    restore_entry(entry_id)
+                    self.send_json(200, {"status": "restored", "id": entry_id})
+                else:
+                    update_state(action, entry_id)
+                    self.send_json(200, {"status": action, "id": entry_id})
+                return
             else:
-                raise DropError("kind must be url, note or image")
-            self.send_json(200 if result["status"] == "created" else 409, result)
+                raise DropError("kind must be url, note, image or state")
+            status = 200 if result["status"] in {"created", "noted"} else 409
+            self.send_json(status, result)
         except DropError as error:
             self.send_json(400, {"error": str(error)})
         except Exception as error:
             self.send_json(500, {"error": str(error)})
 
 
+def require_loopback(host: str) -> None:
+    if host != "127.0.0.1":
+        raise DropError("Cabinet only listens on 127.0.0.1")
+
+
+def serve(host: str, port: int) -> None:
+    require_loopback(host)
+    class LocalServer(ThreadingHTTPServer):
+        daemon_threads = True
+
+    class StaticHandler(Handler):
+        def do_GET(self) -> None:
+            if self.path.startswith("/api/") or self.path == "/health":
+                return super().do_GET()
+            relative = urlsplit(self.path).path.lstrip("/") or "index.html"
+            candidate = (ROOT / relative).resolve()
+            try:
+                candidate.relative_to(ROOT)
+            except ValueError:
+                self.send_json(403, {"error": "outside repository"})
+                return
+            if not candidate.is_file():
+                self.send_json(404, {"error": "not found"})
+                return
+            content = candidate.read_bytes()
+            if candidate.suffix == ".html":
+                content_type = "text/html; charset=utf-8"
+            elif candidate.suffix == ".js":
+                content_type = "application/javascript; charset=utf-8"
+            elif candidate.suffix == ".svg":
+                content_type = "image/svg+xml"
+            else:
+                content_type = "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+    server = LocalServer((host, port), StaticHandler)
+    PID_PATH.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    print(f"Cabinet listening on http://{host}:{port}/", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        if PID_PATH.exists() and PID_PATH.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            PID_PATH.unlink()
+
+
+def start(host: str, port: int) -> None:
+    require_loopback(host)
+    if PID_PATH.exists():
+        old_pid = PID_PATH.read_text(encoding="utf-8").strip()
+        if old_pid.isdigit():
+            try:
+                os.kill(int(old_pid), 0)
+                print(f"Cabinet is already running on http://{host}:{port}/ (pid {old_pid})")
+                return
+            except ProcessLookupError:
+                pass
+        PID_PATH.unlink()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, port))
+    except OSError as error:
+        if error.errno == 48:
+            owner = ""
+            lsof = shutil.which("lsof")
+            if lsof:
+                probe = subprocess.run([lsof, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                                       capture_output=True, text=True)
+                if probe.stdout.strip():
+                    owner = f" by pid {probe.stdout.splitlines()[0]}"
+            raise DropError(f"port {port} is already in use{owner}") from error
+        raise
+    finally:
+        sock.close()
+    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "serve",
+                                "--host", host, "--port", str(port)],
+                               cwd=str(ROOT), stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, start_new_session=True)
+    health_opener = build_opener(ProxyHandler({}))
+    for _ in range(50):
+        try:
+            request = Request(f"http://127.0.0.1:{port}/api/health",
+                              headers={"Host": "127.0.0.1"})
+            with health_opener.open(request, timeout=0.4) as response:
+                if response.status == 200:
+                    print(f"Cabinet started on http://{host}:{port}/ (pid {process.pid})")
+                    return
+        except Exception:
+            time.sleep(0.1)
+    process.terminate()
+    raise DropError("Cabinet started but health check did not pass")
+
+
+def stop() -> None:
+    if not PID_PATH.exists():
+        print("Cabinet is not running")
+        return
+    pid = PID_PATH.read_text(encoding="utf-8").strip()
+    if not pid.isdigit():
+        PID_PATH.unlink()
+        print("Cabinet is not running")
+        return
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+        print(f"Cabinet stopped (pid {pid})")
+    except ProcessLookupError:
+        print("Cabinet is not running")
+    finally:
+        PID_PATH.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", nargs="?", choices=["url", "note", "image", "serve"])
+    parser.add_argument("kind", nargs="?", choices=["url", "note", "image", "serve", "start", "stop"])
     parser.add_argument("value", nargs="?")
     parser.add_argument("--name", default="")
+    parser.add_argument("--note", default="")
     parser.add_argument("--file")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8788)
     args = parser.parse_args()
 
     if args.kind == "serve":
-        server = ThreadingHTTPServer((args.host, args.port), Handler)
-        print(f"Cabinet drop listening on http://{args.host}:{args.port}/drop", flush=True)
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
+        serve(args.host, args.port)
+        return
+    if args.kind == "start":
+        start(args.host, args.port)
+        return
+    if args.kind == "stop":
+        stop()
         return
 
     if args.kind not in {"url", "note", "image"}:
@@ -546,7 +764,7 @@ def main() -> None:
     else:
         if not args.value:
             parser.error(f"{args.kind} drops require a value")
-        result = drop(args.kind, args.value)
+        result = drop(args.kind, args.value, note=args.note)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

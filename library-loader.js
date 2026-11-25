@@ -16,6 +16,33 @@
   window.cabinetEscapeHtml=escapeHtml;
   window.cabinetSafeAsset=safeAsset;
   window.cabinetSafeColor=safeColor;
+  window.cabinetSafeUrl=function (value) {
+    const url=String(value == null ? '' : value).trim();
+    return /^https?:\/\//i.test(url) ? url : '';
+  };
+  window.cabinetState={
+    async read() {
+      if (location.protocol === 'file:') return {trashed:[],later:[]};
+      try {
+        const response = await fetch('/api/state', {cache:'no-store'});
+        if (!response.ok) return {trashed:[],later:[]};
+        return await response.json();
+      } catch (error) {
+        return {trashed:[],later:[]};
+      }
+    },
+    async update(action, id) {
+      if (location.protocol === 'file:') throw new Error('请先运行 python3 drop.py start');
+      const response = await fetch('/drop', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({kind:'state',action,id})
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || '状态没存上');
+      return payload;
+    }
+  };
   const seen = new Set();
   const fingerprints = new Set();
   function merge() {
