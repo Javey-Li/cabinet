@@ -264,10 +264,68 @@ class PageSafetyTests(unittest.TestCase):
                 self.assertLess(max(widths) - min(widths), 1, sample)
                 for lobe in sample["lobes"]:
                     self.assertLess(abs(lobe["center"] - lobe["labelCenter"]), 1, sample)
-                    if lobe["selected"]:
-                        self.assertNotIn(lobe["background"], ["transparent", "rgba(0, 0, 0, 0)"], sample)
-                    else:
-                        self.assertIn(lobe["background"], ["transparent", "rgba(0, 0, 0, 0)"], sample)
+                    # The selected tint is drawn once, in the SVG under the labels; the buttons stay clear.
+                    self.assertIn(lobe["background"], ["transparent", "rgba(0, 0, 0, 0)"], sample)
+
+    def test_tab_backgrounds_sit_under_their_labels(self) -> None:
+        def script(lang: str, theme: str) -> str:
+            return (
+                "await window.CABINET_READY;await frame();const samples=[];"
+                "const box=el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,center:r.left+r.width/2};};"
+                "const shape=id=>{const el=document.getElementById(id);if(!el)return null;const b=el.getBBox();"
+                "if(!b.width)return null;const m=el.getScreenCTM();"
+                "return {left:m.a*b.x+m.e,right:m.a*(b.x+b.width)+m.e,center:m.a*(b.x+b.width/2)+m.e};};"
+                f"window.setLang('{lang}');"
+                f"if(document.documentElement.dataset.theme!=='{theme}')document.querySelector('#theme-toggle').click();"
+                "const sample=(mode,hover)=>{const tab=document.querySelector(`.lobe[data-mode='${mode}']`);"
+                "const lobes=[...document.querySelectorAll('.lobe')].map(box);"
+                "samples.push({mode,hover,label:box(tab.querySelector('.seg-lbl')),first:lobes[0],last:lobes[2],"
+                "all:shape('seg-path'),on:shape('seg-on'),width:innerWidth});};"
+                "for(const mode of ['canvas','discover','pending']){document.querySelector(`.lobe[data-mode='${mode}']`).click();"
+                "await frame();sample(mode,false);}"
+                # Hovering stretches the capsule outward; the tint and the label have to move with it.
+                "const tab=document.querySelector('.lobe[data-mode=\"canvas\"]');tab.click();"
+                "tab.dispatchEvent(new MouseEvent('mouseenter',{clientX:box(tab).center,clientY:20}));"
+                "for(let index=0;index<4;index++)await frame();sample('canvas',true);"
+                "const pre=document.createElement('pre');pre.id='test-result';"
+                "pre.textContent=JSON.stringify({samples});document.body.appendChild(pre);"
+            )
+        for width in [1440, 390]:
+            for lang in ["zh", "en"]:
+                for theme in ["light", "dark"]:
+                    result = run_page(script(lang, theme), width=width)
+                    self.assertFalse(result.get("error"), result)
+                    for sample in result["samples"]:
+                        with self.subTest(width=width, lang=lang, theme=theme, mode=sample["mode"], hover=sample["hover"]):
+                            self.assertIsNotNone(sample["on"], sample)
+                            self.assertLess(abs(sample["on"]["center"] - sample["label"]["center"]), 1, sample)
+                            self.assertGreaterEqual(sample["all"]["left"], -0.5, sample)
+                            self.assertLessEqual(sample["all"]["right"], sample["width"] + 0.5, sample)
+                            if not sample["hover"]:
+                                self.assertLess(abs(sample["all"]["left"] - sample["first"]["left"]), 1, sample)
+                                self.assertLess(abs(sample["all"]["right"] - sample["last"]["right"]), 1, sample)
+
+    def test_canvas_feel_words_do_not_cover_cards(self) -> None:
+        script = (
+            "await window.CABINET_READY;const canvas=document.querySelector('canvas');const context=canvas.getContext('2d');"
+            "let cards=[],words=[];const fillRect=context.fillRect,fillText=context.fillText,roundRect=context.roundRect;"
+            "context.fillRect=function(x,y,width,height){if(x===0&&y===0&&width===innerWidth&&height===innerHeight){cards=[];words=[];}"
+            "else cards.push({left:x,top:y,right:x+width,bottom:y+height});return fillRect.call(this,x,y,width,height);};"
+            "context.fillText=function(text,x,y){if(this.font.includes('18px')){const w=this.measureText(String(text)).width;"
+            "words.push({text:String(text),left:x-w/2,right:x+w/2,top:y-16,bottom:y+18});}return fillText.call(this,text,x,y);};"
+            "for(let index=0;index<12;index++)await frame();"
+            "const hit=(a,b)=>a.left<b.right&&b.left<a.right&&a.top<b.bottom&&b.top<a.bottom;"
+            "const overlaps=words.flatMap(word=>cards.filter(card=>hit(word,card)).map(card=>({word:word.text,card})));"
+            "const pre=document.createElement('pre');pre.id='test-result';"
+            "pre.textContent=JSON.stringify({words:words.length,cards:cards.length,overlaps});document.body.appendChild(pre);"
+        )
+        for width in [1440, 390]:
+            result = run_page(script, width=width)
+            with self.subTest(width=width):
+                self.assertFalse(result.get("error"), result)
+                self.assertGreater(result["words"], 0, result)
+                self.assertGreater(result["cards"], 0, result)
+                self.assertEqual(result["overlaps"], [], result)
 
     def test_narrow_pending_entry_trashes_and_restores(self) -> None:
         remote_state = {"trashed": [], "later": []}

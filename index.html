@@ -45,6 +45,7 @@
   .seg{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:248px; height:36px; pointer-events:none}
   .seg-svg{position:absolute; inset:0; width:248px; height:36px; overflow:visible}
   #seg-path{fill:#ffffff}
+  #seg-on{fill:rgba(176,64,47,.10)}   /* 选中底块：和白胶囊同一套坐标，悬停拉开时一起走 */
   #seg-glow{transition:opacity .25s}   /* hover 砖红光晕，位置随鼠标（JS 设 cx/cy），裁进胶囊形状 */
   /* 命中区固定不动（修中点抖动）；只让里面文字位移，由 JS 逐帧驱动与 path 同步 */
   .lobe{
@@ -55,7 +56,6 @@
   .lobe[data-mode="canvas"]{left:0}
   .lobe[data-mode="discover"]{left:83px}
   .lobe[data-mode="pending"]{left:166px}
-  .lobe.on{background:rgba(176,64,47,.10)}
   .seg-lbl{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     font:inherit; font-size:13px; font-weight:400; letter-spacing:.04em; color:#241f21;
@@ -677,7 +677,7 @@
   html[data-theme="dark"] .shell-head{background:linear-gradient(rgba(23,21,19,.94),rgba(23,21,19,.82))}
   html[data-theme="dark"] #seg-path{fill:#211e1a}
   html[data-theme="dark"] .seg-lbl{color:#eee9df}
-  html[data-theme="dark"] .lobe.on{background:rgba(209,106,85,.14)}
+  html[data-theme="dark"] #seg-on{fill:rgba(209,106,85,.14)}
   html[data-theme="dark"] #summon,html[data-theme="dark"] #fbar,
   html[data-theme="dark"] #conn-f,html[data-theme="dark"] #conn-hint,
   html[data-theme="dark"] .pick-pop,html[data-theme="dark"] #tray,
@@ -708,7 +708,7 @@
   </div>
   <!-- 顶部切换：JS 实时算 SVG path metaball（floema 真方案）— rest 两胶囊相接、hover 拉丝长颈、脆角 -->
   <div class="seg" id="seg">
-    <svg class="seg-svg" id="seg-svg" viewBox="0 0 165 36" aria-hidden="true">
+    <svg class="seg-svg" id="seg-svg" viewBox="0 0 248 36" aria-hidden="true">
       <defs>
         <radialGradient id="seg-glow-grad">
           <stop offset="0%" stop-color="#b0402f" stop-opacity="0.18"/>
@@ -718,6 +718,7 @@
         <clipPath id="seg-clip"><path id="seg-clip-path"></path></clipPath>
       </defs>
       <path id="seg-path"></path>
+      <path id="seg-on"></path>
       <circle id="seg-glow" r="27" fill="url(#seg-glow-grad)" opacity="0" clip-path="url(#seg-clip)"></circle>
     </svg>
     <button class="lobe on" data-mode="canvas"><span class="seg-lbl">读灵感<span class="seg-dot"></span></span></button>
@@ -1101,6 +1102,41 @@ window.CABINET_READY.then(()=>{
   }
   let words = buildWords(items);
 
+  // 感觉词让开图：词从重心出发，往外一圈圈找最近的空位，不压任何一张图、也不压别的词。
+  // 图不动（位置是色彩给的）；词的大小按屏幕像素算，所以跟着缩放重算，换语言也重算。
+  const WORD_PAD=8, CARD_PAD=6, WORD_STEP=10, WORD_REACH=420;
+  let wordKey='';
+  function wordBox(o,z){
+    ctx.font='18px Georgia, "Songti SC", serif';
+    const tw=ctx.measureText(window.feelLabel(o.w)).width;
+    ctx.font='10px "PingFang SC"';
+    const nw=ctx.measureText(o.n+(window.LANG==='en'?' moves':'手法')).width;
+    return {hw:(Math.max(tw,nw)/2+WORD_PAD)/z, top:(26+WORD_PAD)/z, bottom:(10+WORD_PAD)/z};
+  }
+  function placeWords(z){
+    const pad=(CARD_PAD+Math.max(1.5,2.2*z)+3)/z;       // 图框 + 浮动 + 留白，按屏幕像素换成世界单位
+    const cards=visibleItems().map(it=>({l:it.tx-it.w*1.06/2-pad, r:it.tx+it.w*1.06/2+pad, t:it.ty-it.h*1.06/2-pad, b:it.ty+it.h*1.06/2+pad}));
+    const taken=[];
+    const hits=(b)=>cards.some(c=>b.l<c.r&&c.l<b.r&&b.t<c.b&&c.t<b.b)||taken.some(c=>b.l<c.r&&c.l<b.r&&b.t<c.b&&c.t<b.b);
+    const step=WORD_STEP/z, n=Math.ceil(WORD_REACH/WORD_STEP);
+    const ring=[];
+    for(let i=-n;i<=n;i++) for(let j=-n;j<=n;j++) if(i*i+j*j<=n*n) ring.push([i*step,j*step]);
+    ring.sort((a,b)=>(a[0]*a[0]+a[1]*a[1])-(b[0]*b[0]+b[1]*b[1])||a[1]-b[1]||a[0]-b[0]);
+    words.forEach(o=>{
+      const box=wordBox(o,z);
+      const at=([dx,dy])=>({l:o.x+dx-box.hw, r:o.x+dx+box.hw, t:o.y+dy-box.top, b:o.y+dy+box.bottom});
+      const hit=ring.find(d=>!hits(at(d)))||[0,0];
+      taken.push(at(hit));
+      o.tx=o.x+hit[0]; o.ty=o.y+hit[1];
+      if(o.px===undefined){ o.px=o.tx; o.py=o.ty; }
+    });
+  }
+  function settleWords(){
+    const key=Math.round(ct.z*20)+'|'+window.LANG+'|'+words.length+'|'+trashedSet.size+'|'+stressOn;
+    if(key!==wordKey){ wordKey=key; placeWords(Math.round(ct.z*20)/20); }
+    words.forEach(o=>{ o.px+=(o.tx-o.px)*.2; o.py+=(o.ty-o.py)*.2; });
+  }
+
   const cam={x:WW/2, y:WH/2, z:.45};
   const ct ={x:WW/2, y:WH/2, z:.45};
   const smooth=(v,a,b)=>Math.max(0,Math.min(1,(v-a)/(b-a)));
@@ -1253,7 +1289,7 @@ window.CABINET_READY.then(()=>{
     relax(live);
     const now=performance.now();
     live.forEach((it,i)=>{ it.tx=it.hx; it.ty=it.hy; it.dly=now+i*6; });
-    words = buildWords(live);
+    words = buildWords(live); wordKey='';
     if(!summon){ window.__canvasResume && window.__canvasResume(); }
   };
 
@@ -1346,8 +1382,9 @@ window.CABINET_READY.then(()=>{
     wordHit=[];
     if(wA>0){
       ctx.textAlign='center';
+      settleWords();
       words.forEach(o=>{
-        const sx=(o.x-cam.x)*z+W/2, sy=(o.y-cam.y)*z+H/2;
+        const sx=(o.px-cam.x)*z+W/2, sy=(o.py-cam.y)*z+H/2;
         if(sx<-200||sx>W+200||sy<-80||sy>H+80) return;
         const on = summon && summon.q===o.w;
         ctx.save();
@@ -2242,6 +2279,7 @@ window.CABINET_READY.then(()=>{
   const glow = document.getElementById('seg-glow');
   const lblL = document.querySelector('.lobe[data-mode="canvas"] .seg-lbl');
   const lblR = document.querySelector('.lobe[data-mode="discover"] .seg-lbl');
+  const on = document.getElementById('seg-on');
   const H=36, R=9, LW=82, GAP=1, SEP=26, NY=H/2-R, OV=R, CY=H/2, W=3*LW+2*GAP;  // GAP=rest相接间隙；SEP=hover外拉距离
   const REST_W=7.4, HOVER_W=6.4;                                   // 颈腰半高（粗）：rest→hover 微收，丝偏粗
 
@@ -2266,6 +2304,9 @@ window.CABINET_READY.then(()=>{
     const wy2=REST_W - (REST_W-HOVER_W)*gn2;
     const d=rr(leftX,LW)+rr(midX,LW)+neck(aR,b,wy)+rr(rightX,LW)+neck(midX+LW,rightX,wy2);
     path.setAttribute('d', d); clip.setAttribute('d', d);        // 光晕裁剪用同一形状
+    const sel=(seg.querySelector('.lobe.on')||{}).dataset;          // 选中底块画在选中那颗胶囊上，跟着它拉开
+    const onX={canvas:leftX, discover:midX, pending:rightX}[sel&&sel.mode];
+    on.setAttribute('d', onX===undefined?'':rr(onX,LW));
     lblL.style.transform=`translateX(${leftX}px)`;
     lblR.style.transform=`translateX(${midX-(LW+GAP)}px)`;
   }
@@ -2291,6 +2332,8 @@ window.CABINET_READY.then(()=>{
     b.addEventListener('mousemove', moveGlow);
     b.addEventListener('mouseleave',()=>{ right?tgtR=0:tgtL=0; hideT=setTimeout(()=>glow.style.opacity='0',50); kick(); });
   });
+  // 换页签时重画选中底块（页签可能从别处切换，所以看 class 变化）
+  new MutationObserver(build).observe(seg,{subtree:true,attributes:true,attributeFilter:['class']});
   build();
 })();
 </script>
