@@ -148,6 +148,35 @@ aren't carried over automatically. The spec is agent-neutral — Claude Code use
 
 ---
 
+## Quick drop
+
+`drop.py` is a small local input endpoint. It accepts one URL, one note or one
+image, writes a Cabinet entry to `data-v3.js`, and keeps the source, capture time
+and content fingerprint. A repeated item returns `duplicate` instead of adding
+another entry.
+
+```bash
+python3 drop.py url 'https://example.com/reference'
+python3 drop.py note 'Keep this thought in the inbox'
+python3 drop.py image './reference.png'
+
+# Local HTTP; listens on 127.0.0.1 by default
+python3 drop.py serve --port 8788
+```
+
+The HTTP endpoint accepts JSON: `{"kind":"url","value":"https://example.com"}`,
+`{"kind":"note","value":"One note"}`, or
+`{"kind":"image","name":"reference.png","data":"<base64>"}`. When
+`CABINET_DROP_TOKEN` is set, send `Authorization: Bearer ...`.
+
+This endpoint only captures input. It does not call a model, fetch pages or
+extract moves. URLs and notes get a visible placeholder card; images keep the
+original file. An agent can process them later with [`INGEST.md`](./INGEST.md).
+Pillow is optional: it extracts image colors when installed, while image drops
+still work without it and use the real width and height.
+
+---
+
 ## The model: feel ← move ← reference
 
 - **Reference** (a plate) — a screenshot or image you collected.
@@ -186,6 +215,8 @@ assets/ thumbs/   seed reference images (low-res) + thumbnails
 folio/ shots/     "find inspiration" directory — thumbnails linking to design sites
 _inbox/           drop zone for references to ingest
 INGEST.md         the agent-neutral ingest spec
+drop.py           local URL / note / image drop endpoint
+tests/           single-file regression tests for drop.py
 start.sh          localhost fallback (if your browser blocks connect on file://)
 setup/            install.sh — installs /translate, the 转译 hook, and (macOS) the watcher
 ```

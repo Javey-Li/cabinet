@@ -7,6 +7,11 @@ config.local.js
 _desk.json
 .ingest.lock
 _ingest.log
+.drop.lock
+
+# Python
+__pycache__/
+*.py[cod]
 
 # ingest drop zone — keep the empty dir, ignore its contents
 _inbox/*
